@@ -2,6 +2,9 @@
 
 irm https://ollama.com/install.ps1 | iex
 
+# Set Fireworks key for remote routing
+export FIREWORKS_API_KEY="your-key"
+
 # Check if it's up
 curl http://localhost:11434/v1/models
 
