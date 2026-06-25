@@ -3,7 +3,19 @@
 irm https://ollama.com/install.ps1 | iex
 
 # Set Fireworks key for remote routing
+
 export FIREWORKS_API_KEY="your-key"
+
+# Run and Install the requirement
+
+source venv/bin/activate
+pip install -r my_routing_agent/requirements.txt
+
+# Pull the local model (required for local routing)
+ollama pull llama3.2
+
+# Launch the chatbot
+streamlit run app.py
 
 # Check if it's up
 curl http://localhost:11434/v1/models
@@ -29,6 +41,15 @@ curl http://localhost:11434/v1/chat/completions \
 
 # You have to activate your env environment first then run this command 
 
+Source venv/bin/activate
 PYTHONPATH=. python -m my_routing_agent.main "What is 17 * 23?"
 
 
+# Other test cases
+
+# Complex task → remote
+PYTHONPATH=. python -m my_routing_agent.main "Analyze microservices vs monolith step by step"
+# With image
+PYTHONPATH=. python -m my_routing_agent.main "Describe this image" --image photo.jpg
+# Force JSON schema output on remote
+PYTHONPATH=. python -m my_routing_agent.main "Summarize this bug report" --json
