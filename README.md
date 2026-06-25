@@ -1,154 +1,335 @@
-# AMD Hackathon Agent
+# Hybrid Token-Efficient Routing Agent
 
-A structured, production-oriented agent project built for the AMD Hackathon. This repository contains the code, tooling, and workflows for running and evaluating an AI agent system.
+AMD Hackathon project: a **middleware-first hybrid inference router** that minimizes remote API token spend by sending work to the cheapest capable backend—Python `eval`, local Ollama, or Fireworks AI—based on prompt shape, length, and modality.
+
+The primary demo is a **Streamlit chatbot** in [`app.py`](app.py). A separate, library-style orchestrator lives in [`my_routing_agent/`](my_routing_agent/) for CLI use and deeper experimentation.
 
 ---
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Features](#features)
-- [Tech Stack](#tech-stack)
-- [Repository Structure](#repository-structure)
-- [Getting Started](#getting-started)
-  - [Prerequisites](#prerequisites)
-  - [Installation](#installation)
-  - [Environment Variables](#environment-variables)
-- [Usage](#usage)
-- [Development](#development)
+- [What It Does](#what-it-does)
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Running the App](#running-the-app)
+- [CLI Orchestrator (Optional)](#cli-orchestrator-optional)
+- [Routing & Middleware](#routing--middleware)
+- [Demo Prompts](#demo-prompts)
+- [Repository Layout](#repository-layout)
 - [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [License](#license)
 
 ---
 
-## Overview
+## What It Does
 
-This project is an AI agent implementation created for hackathon workflows. It is primarily Python-based, with smaller Rust/C components for performance-focused or systems-level tasks.
+| Capability | Description |
+|------------|-------------|
+| **Smart math extraction** | Regex finds arithmetic embedded in natural language (e.g. `"What is 2 + 2?"`) and evaluates it locally with zero LLM tokens. |
+| **Prompt distillation** | Long prompts bound for Fireworks are compressed first by local Ollama to strip filler and save remote tokens. |
+| **Task decomposition & agent swarm** | Multi-question prompts are split by a local planner into explicit sub-tasks, then executed in parallel via `ThreadPoolExecutor`. |
+| **Vision routing** | Sidebar image uploads route to Fireworks vision (`llama-v3p2-11b-vision-instruct`). |
+| **Negative guardrails** | Local and remote LLM calls enforce terse, factual answers and immediate denial of flawed requests (e.g. “capital of London”). |
+| **Telemetry UI** | Route, token usage, parallel latency, distillation report, and swarm decomposition are shown in the Streamlit dashboard. |
 
-Use this repository to:
+---
 
-- Run the agent locally
-- Iterate on prompts, tools, and logic
-- Test behavior and performance
-- Prepare hackathon-ready demos and submissions
-
-## Features
-
-- Modular agent workflow design
-- Python-first development experience
-- Extensible architecture for tools/integrations
-- Mixed-language support for performance-critical pieces
-- Ready for iterative experimentation
-
-## Tech Stack
-
-Language composition (from repository metadata):
-
-- **Python**: 94.7%
-- **Rust**: 5.0%
-- **C**: 0.2%
-- **Cython**: 0.1%
-- **Go / Makefile**: minimal
-
-## Repository Structure
-
-> Update this section as files evolve.
+## Architecture
 
 ```text
-.
-├── src/                # Core agent source code
-├── scripts/            # Utility / automation scripts
-├── tests/              # Test suite
-├── rust/               # Rust components (if applicable)
-├── docs/               # Project docs and design notes
-└── README.md           # Project overview and setup guide
+User prompt
+    │
+    ▼
+┌─────────────────────────────────────┐
+│  Task Decomposition (local Ollama)  │  ← multi-question → JSON sub-task list
+└─────────────────────────────────────┘
+    │
+    ├── len(tasks) > 1 ──► Agent Swarm (parallel route_and_execute per task)
+    │
+    └── single task ──► route_and_execute
+                            │
+                            ├── Image attached? ──► VISION_REMOTE (Fireworks)
+                            ├── Math regex match? ──► MATH_PYTHON (eval, 0 tokens)
+                            ├── len(prompt) ≤ threshold ──► TEXT_LOCAL (Ollama)
+                            └── len(prompt) > threshold ──► distill ──► TEXT_REMOTE (Fireworks)
 ```
 
-## Getting Started
+**Backends**
 
-### Prerequisites
+| Route | Backend | When |
+|-------|---------|------|
+| `MATH_PYTHON` | Python `eval` (sandboxed) | Embedded expression with `+ - * /` |
+| `TEXT_LOCAL` | Ollama `llama3.2` | Short text (≤ char threshold) |
+| `TEXT_REMOTE` | Fireworks `qwen2p5-72b-instruct` | Long text (after distillation) |
+| `VISION_REMOTE` | Fireworks `llama-v3p2-11b-vision-instruct` | Image uploaded |
+| `AGENT_SWARM` | Parallel sub-agents | Multiple decomposed tasks |
 
-- Python 3.11+ (recommended)
-- `pip` or `uv` for dependency management
-- (Optional) Rust toolchain for Rust modules
+---
 
-### Installation
+## Prerequisites
+
+1. **Python 3.11+** (3.12 tested)
+2. **Ollama** running locally with `llama3.2` pulled  
+   Required for: local text inference, prompt distillation, and task decomposition.
+3. **Fireworks AI API key**  
+   Required for: long-text remote routes and vision. Math and short local routes work without it.
+
+### Install Ollama and pull the model
 
 ```bash
-# 1) Clone repository
+# Install Ollama: https://ollama.com/download
+
+# Start the server (if not already running)
+ollama serve
+
+# In another terminal, pull the model used by app.py
+ollama pull llama3.2
+```
+
+Verify Ollama is reachable:
+
+```bash
+curl http://localhost:11434/api/tags
+```
+
+---
+
+## Installation
+
+```bash
+# 1. Clone the repository
 git clone https://github.com/Hour-Meng/amd-hackathon-agent.git
 cd amd-hackathon-agent
 
-# 2) Create and activate virtual environment
-python -m venv .venv
-source .venv/bin/activate   # macOS/Linux
-# .venv\\Scripts\\activate    # Windows PowerShell
+# 2. Create and activate a virtual environment
+python3 -m venv venv
+source venv/bin/activate          # Linux / macOS
+# venv\Scripts\activate           # Windows
 
-# 3) Install dependencies
+# 3. Upgrade pip and install dependencies
 pip install -U pip
-pip install -r requirements.txt
+pip install -r my_routing_agent/requirements.txt
 ```
 
-### Environment Variables
+**Dependencies** (`my_routing_agent/requirements.txt`):
 
-Create a `.env` file in the repository root (if your workflow requires API keys):
+- `streamlit` — web UI
+- `requests` — Ollama & Fireworks HTTP calls
+- `Pillow` — image downscaling for vision route
+- `tiktoken` — token counting (CLI package)
+
+---
+
+## Configuration
+
+### Streamlit app (`app.py`)
+
+Most settings are in the **sidebar** at runtime:
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| **Fireworks API Key** | _(empty)_ | Required for `TEXT_REMOTE` and `VISION_REMOTE` |
+| **Text Complexity Threshold** | 50 chars | Prompts longer than this go remote (after distillation) |
+| **Image upload** | optional | Forces vision route on next message |
+
+No `.env` file is required for the Streamlit demo—the API key is entered in the UI.
+
+### CLI package (`my_routing_agent`)
+
+The CLI reads environment variables (optional overrides):
 
 ```bash
-cp .env.example .env
+export FIREWORKS_API_KEY="fw_..."
+export LOCAL_LLM_BASE_URL="http://localhost:11434/v1"
+export LOCAL_LLM_MODEL="llama3.2:3b"
+export FIREWORKS_MODEL="accounts/fireworks/models/qwen3p7-max"
 ```
 
-Common variables (example):
+Get a Fireworks key at [https://fireworks.ai](https://fireworks.ai).
 
-```env
-OPENAI_API_KEY=your_key_here
-MISTRAL_API_KEY=your_key_here
-```
+---
 
-## Usage
+## Running the App
 
-Run the main entry point (adjust to your project’s actual entry file):
+From the repository root with your virtual environment activated:
 
 ```bash
-python -m src.main
+streamlit run app.py
 ```
 
-Or, if you use a script-based entrypoint:
+Streamlit opens a browser tab (default `http://localhost:8501`).
+
+**Minimum smoke test (no Fireworks key needed):**
+
+```text
+What is 2 + 2?
+```
+
+Expected: route `MATH_PYTHON`, answer `4`, 0 tokens burned.
+
+**Full stack test (Ollama + Fireworks key in sidebar):**
+
+```text
+tell me the capital of france, london, paris, cambodia, 2+12
+```
+
+Expected: agent swarm with context-preserving sub-tasks, math handled locally, capitals answered tersely or denied when flawed.
+
+---
+
+## CLI Orchestrator (Optional)
+
+The `my_routing_agent` package is a separate, config-driven pipeline (compressor → router → local/remote clients) with printed telemetry.
 
 ```bash
-python run.py
+# From repo root, with venv active
+python -m my_routing_agent.main "What is 17 * 23?"
+
+# Force a destination
+python -m my_routing_agent.main "Explain quantum tunneling" --force-remote
+python -m my_routing_agent.main "Hello" --force-local
+
+# Multimodal (image path)
+python -m my_routing_agent.main "Describe this" --image path/to/photo.jpg
 ```
 
-## Development
+Set `FIREWORKS_API_KEY` in the environment for remote routes.
 
-### Run tests
+---
 
-```bash
-pytest -q
+## Routing & Middleware
+
+### Middleware execution order (single task)
+
+1. **Vision** — if an image is attached in the sidebar  
+2. **Embedded math** — regex `([\d\s\+\-\*\/\(\)\.]{3,})` with operator check; safe `eval` with `{"__builtins__": None}`  
+3. **Length threshold** — short → local Ollama; long → distill then Fireworks  
+
+### Task decomposition (multi-question)
+
+Local Ollama acts as a **strict few-shot planner**. It must:
+
+- Never emit bare nouns (`"Paris"`, `"Cambodia"`)  
+- Repeat shared context on every sub-task (`"capital of France"`, not `"France"`)  
+- Tag math as `"math: <expression>"`  
+
+Example:
+
+```text
+Input:  tell me the capital of france, london, paris, cambodia, 2+12
+Output: ["capital of France", "capital of London", "capital of Paris",
+         "capital of Cambodia", "math: 2+12"]
 ```
 
-### Format and lint (example)
+### Agent swarm
 
-```bash
-ruff check .
-ruff format .
+When decomposition returns more than one task:
+
+- `ThreadPoolExecutor` runs up to `min(len(tasks), 8)` workers in parallel  
+- Each sub-task goes through `route_and_execute` independently  
+- Failures in one thread do not crash the app  
+- Dashboard latency reports **parallel wall-clock time** (slowest thread), not the sum of all threads  
+
+### Prompt distillation
+
+Before Fireworks text inference, local Ollama compresses the prompt. The **Middleware Telemetry** expander shows original vs distilled text and characters saved.
+
+### LLM system constraints
+
+All local and remote text/vision LLM calls receive a combined guardrail prompt:
+
+- Data-extraction micro-service behavior (deny flawed facts in under 5 words)  
+- Brutally concise answers, max ~15 words  
+- No greetings or filler  
+
+---
+
+## Demo Prompts
+
+| Prompt | Expected behavior |
+|--------|-------------------|
+| `What is 2 + 2?` | `MATH_PYTHON`, instant, 0 tokens |
+| `Hello, how are you today?` | `TEXT_LOCAL` (short) |
+| A paragraph > threshold chars | `TEXT_REMOTE` after distillation |
+| `capital of Japan and who wrote Hamlet` | Agent swarm, 2 parallel sub-agents |
+| `tell me the capital of france, london, paris, cambodia, 2+12` | Swarm + math local + terse/denial answers |
+| Image + `"What is in this photo?"` | `VISION_REMOTE` |
+
+---
+
+## Repository Layout
+
+```text
+amd-hackathon-agent/
+├── app.py                          # Streamlit demo (primary entry point)
+├── README.md
+├── my_routing_agent/
+│   ├── main.py                     # CLI orchestrator
+│   ├── config.py                   # Env-based configuration
+│   ├── requirements.txt            # Python dependencies
+│   ├── clients/
+│   │   ├── local_client.py         # Ollama / OpenAI-compatible client
+│   │   └── remote_client.py        # Fireworks client
+│   ├── middleware/
+│   │   └── compressor.py           # Input compression
+│   ├── routers/
+│   │   └── engine.py               # Tiered routing engine
+│   └── utils/
+│       └── tokenizer.py              # tiktoken wrapper
+└── venv/                           # Local virtualenv (gitignored)
 ```
+
+There is **no** root `requirements.txt`, `src/`, `tests/`, or `.env.example`—use `my_routing_agent/requirements.txt` and the sidebar / env vars above.
+
+---
 
 ## Troubleshooting
 
-- **ModuleNotFoundError**: Ensure your virtual environment is activated and dependencies are installed.
-- **Key/auth errors**: Verify `.env` values and exported environment variables.
-- **Native build issues**: Reinstall build tools and verify Rust/C toolchains are available.
+### `Ollama is not running on localhost:11434`
 
-## Contributing
+```bash
+ollama serve
+ollama pull llama3.2
+curl http://localhost:11434/api/tags
+```
 
-Contributions are welcome.
+### `Fireworks API Key required`
 
-1. Fork the repo
-2. Create a feature branch
-3. Commit your changes
-4. Open a pull request
+Enter your key (`fw_...`) in the Streamlit sidebar, or export `FIREWORKS_API_KEY` for the CLI.
+
+### `ModuleNotFoundError: streamlit` / `PIL` / `requests`
+
+Activate the venv and reinstall:
+
+```bash
+source venv/bin/activate
+pip install -r my_routing_agent/requirements.txt
+```
+
+### Task decomposition returns one task for a multi-question prompt
+
+Ollama must be running. The planner uses `llama3.2` at `temperature: 0.0`. Retry with clearer comma-separated questions.
+
+### Math not intercepted
+
+The expression must include an operator (`+`, `-`, `*`, `/`) and digits. Bare numbers or years are not routed to `MATH_PYTHON`.
+
+### Agent swarm feels slow
+
+Parallel latency is dominated by the **slowest** sub-agent (often a remote call). Check per-sub-agent routes in **Middleware Telemetry**.
+
+### `python` command not found
+
+Use `python3`:
+
+```bash
+python3 -m venv venv
+python3 -m my_routing_agent.main "test"
+```
+
+---
 
 ## License
 
-Add your license information here (e.g., MIT, Apache-2.0).
+Add license information here if applicable.

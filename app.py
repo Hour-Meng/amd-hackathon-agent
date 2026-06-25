@@ -25,26 +25,22 @@ RouteName = Literal["MATH_PYTHON", "VISION_REMOTE", "TEXT_LOCAL", "TEXT_REMOTE",
 
 MATH_EXTRACT_PATTERN = re.compile(r"([\d\s\+\-\*\/\(\)\.]{3,})")
 MATH_OPERATOR_PATTERN = re.compile(r"[\+\-\*\/]")
+MATH_PREFIX_PATTERN = re.compile(r"^math:\s*", re.IGNORECASE)
 
-# Core guardrail enforced on every LLM endpoint (local + remote).
-NEGATIVE_GUARDRAIL = (
-    "You are a data-extraction micro-service, not a conversational assistant. "
-    "If an instruction contains a factual error, contradiction, or misconception "
-    "(e.g., asking for the capital of a city), deny it immediately in under 5 words. "
-    "Do not explain, do not apologize, do not give background context. "
-    "Example: 'Error: London is a city.'"
-)
+# Goldilocks guardrails: concise answers, permit how-to/general knowledge,
+# deny only factual impossibilities and logical contradictions.
+SUB_AGENT_SYSTEM_PROMPT = """You are a concise, direct answering agent.
+Rules:
+1. Provide the direct answer. No greetings, no fluff.
+2. "How-to" instructions, general knowledge, and facts are ALL valid. Answer them concisely.
+3. ONLY output an "Error:" if the premise of the question is factually impossible or a logical contradiction.
 
-AGENT_SYSTEM_PROMPT = (
-    "Respond to the user instruction under these constraints:\n"
-    "- Be brutally concise.\n"
-    "- No conversational filler, greetings, or introductory phrases.\n"
-    "- If the request is factually flawed, state the error and stop.\n"
-    "- Max limit: 15 words per answer."
-)
-
-# Single system prompt injected into both Ollama and Fireworks chat calls.
-CORE_SYSTEM_PROMPT = f"{NEGATIVE_GUARDRAIL}\n\n{AGENT_SYSTEM_PROMPT}"
+Examples:
+Task: capital of France -> Paris.
+Task: capital of London -> Error: London is a city, not a country.
+Task: How to open a jar of jam -> Twist the lid counter-clockwise. Run under warm water if stuck.
+Task: Who is Lebron James -> American professional basketball player.
+Task: capital of Paris -> Error: Paris is a city."""
 
 DISTILL_SYSTEM_PROMPT = (
     "You are a prompt compressor. Extract ONLY the core question or instruction from "
@@ -65,6 +61,10 @@ TASK_DECOMPOSITION_SYSTEM = (
     "3. Any arithmetic or mathematical expression must be emitted as 'math: <expression>'.\n"
     "4. Output ONLY a valid JSON array of strings. No markdown, no prose, no keys.\n"
     "5. If the prompt is a single task, return a one-element array.\n\n"
+    "EXAMPLE INPUT:\n"
+    "tell me the capital of france, london, 2+12\n"
+    "EXAMPLE OUTPUT:\n"
+    '["capital of France", "capital of London", "math: 2+12"]\n\n'
     "EXAMPLE INPUT:\n"
     "tell me the capital of france, london, paris, cambodia, 2+12\n"
     "EXAMPLE OUTPUT:\n"
@@ -133,6 +133,19 @@ def _ollama_generate(
     return text, tokens
 
 
+def _math_candidates(prompt: str) -> list[str]:
+    """Build candidate strings for math extraction (planner prefix + embedded expr)."""
+    stripped = prompt.strip()
+    candidates: list[str] = []
+    if stripped:
+        candidates.append(stripped)
+    if MATH_PREFIX_PATTERN.match(stripped):
+        expr = MATH_PREFIX_PATTERN.sub("", stripped).strip()
+        if expr and expr not in candidates:
+            candidates.insert(0, expr)
+    return candidates
+
+
 def safe_math_agent(prompt: str, started: float) -> RouteResult | None:
     """
     Extract embedded mathematical expressions from natural-language prompts.
@@ -140,37 +153,42 @@ def safe_math_agent(prompt: str, started: float) -> RouteResult | None:
 
     Highest-priority interceptor: any sub-task containing a real arithmetic
     expression (must include an operator) is computed locally for zero tokens.
+    Planner-tagged tasks like 'math: 2+12' are stripped and evaluated first.
     """
-    for match in MATH_EXTRACT_PATTERN.finditer(prompt):
-        candidate = match.group(1).strip()
-        if len(candidate) < 3:
+    seen: set[str] = set()
+    for text in _math_candidates(prompt):
+        if text in seen:
             continue
-        # Require an actual operator so bare numbers/years are not mis-routed as math.
-        if not MATH_OPERATOR_PATTERN.search(candidate):
-            continue
-        if not any(ch.isdigit() for ch in candidate):
-            continue
-        try:
-            result = eval(candidate, {"__builtins__": None}, {})  # noqa: S307
-            latency_ms = (time.perf_counter() - started) * 1000.0
-            return RouteResult(
-                answer=str(result),
-                route="MATH_PYTHON",
-                tokens=0,
-                latency_ms=latency_ms,
-                original_prompt=prompt,
-            )
-        except ZeroDivisionError:
-            latency_ms = (time.perf_counter() - started) * 1000.0
-            return RouteResult(
-                answer="⚠️ Division by zero.",
-                route="MATH_PYTHON",
-                tokens=0,
-                latency_ms=latency_ms,
-                original_prompt=prompt,
-            )
-        except Exception:
-            continue
+        seen.add(text)
+        for match in MATH_EXTRACT_PATTERN.finditer(text):
+            candidate = match.group(1).strip()
+            if len(candidate) < 3:
+                continue
+            if not MATH_OPERATOR_PATTERN.search(candidate):
+                continue
+            if not any(ch.isdigit() for ch in candidate):
+                continue
+            try:
+                result = eval(candidate, {"__builtins__": None}, {})  # noqa: S307
+                latency_ms = (time.perf_counter() - started) * 1000.0
+                return RouteResult(
+                    answer=str(result),
+                    route="MATH_PYTHON",
+                    tokens=0,
+                    latency_ms=latency_ms,
+                    original_prompt=prompt,
+                )
+            except ZeroDivisionError:
+                latency_ms = (time.perf_counter() - started) * 1000.0
+                return RouteResult(
+                    answer="Error: Division by zero.",
+                    route="MATH_PYTHON",
+                    tokens=0,
+                    latency_ms=latency_ms,
+                    original_prompt=prompt,
+                )
+            except Exception:
+                continue
     return None
 
 
@@ -188,6 +206,7 @@ def distill_prompt(user_text: str) -> tuple[str, int, str | None]:
             prompt=cleaned,
             system=DISTILL_SYSTEM_PROMPT,
             timeout=90,
+            options={"temperature": 0.0},
         )
         if not distilled:
             return cleaned, tokens, "Distillation returned empty output; using original prompt."
@@ -440,9 +459,9 @@ def _route_text_local(
     payload = {
         "model": LOCAL_MODEL,
         "prompt": prompt,
-        "system": CORE_SYSTEM_PROMPT,
+        "system": SUB_AGENT_SYSTEM_PROMPT,
         "stream": False,
-        "options": {"temperature": 0.0, "num_predict": 64},
+        "options": {"temperature": 0.0, "num_predict": 128},
     }
 
     try:
@@ -504,10 +523,10 @@ def _route_text_remote(
     payload = {
         "model": REMOTE_TEXT_MODEL,
         "messages": [
-            {"role": "system", "content": CORE_SYSTEM_PROMPT},
+            {"role": "system", "content": SUB_AGENT_SYSTEM_PROMPT},
             {"role": "user", "content": distilled},
         ],
-        "max_tokens": 64,
+        "max_tokens": 128,
         "temperature": 0.0,
     }
 
@@ -704,7 +723,11 @@ def render_middleware_telemetry(result: RouteResult) -> None:
 
         if has_swarm:
             st.markdown("#### Agent Swarm Decomposition")
-            st.caption("Parallel sub-agents executed via ThreadPoolExecutor (max_workers=3).")
+            worker_count = max(1, min(len(result.sub_results), 8))
+            st.caption(
+                f"Parallel sub-agents via ThreadPoolExecutor "
+                f"(max_workers={worker_count}, wall-clock latency)."
+            )
             for index, sub in enumerate(result.sub_results, start=1):
                 st.markdown(f"**Sub-Agent {index}** → `{sub.route}` · {sub.latency_ms:.1f} ms")
                 st.code(sub.original_prompt, language=None)
