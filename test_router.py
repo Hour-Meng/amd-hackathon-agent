@@ -13,7 +13,6 @@ from app import (
     CHARACTER_LEVEL_GUARD_REASON,
     DEFAULT_LOCAL_MODEL,
     DEFAULT_REMOTE_MODEL,
-    FACTUAL_RISK_GUARD_REASON,
     LOCAL_GREETING_REASON,
     LOCAL_MATH_REASON,
     LOCAL_UNAVAILABLE_REASON,
@@ -23,9 +22,12 @@ from app import (
     SUB_AGENT_SYSTEM_PROMPT,
     build_remote_candidates,
     check_local_health,
+    classify_prompt,
     had_prior_local_failure,
     heuristic_task_split,
+    is_beneficial_to_decompose,
     is_character_level_task,
+    is_direct_answer_prompt,
     is_factual_risk_prompt,
     is_known_deployed_model,
     mark_prior_local_failure,
@@ -45,6 +47,7 @@ COMPOSITE_PROMPT = (
     "spell apple backward, write the answer of 9+10 backward. "
     "Tell me 1 amazing thing about france"
 )
+MULTI_TASK_PROMPT = "tell me the capital of france, london, paris, cambodia, 2+12"
 
 
 def _decide(
@@ -110,6 +113,77 @@ def _patch_get(handler):
 def _seed_local_health(model: str, healthy: bool) -> None:
     reset_local_health_cache()
     app._LOCAL_HEALTH_CACHE[model.strip()] = (time.time() + 1000.0, healthy)
+
+
+# --- Hierarchical classifier: no spurious decomposition -----------------------------
+
+
+def test_hello_how_are_you_single_direct_agent():
+    _seed_local_health(LOCAL_MODEL, True)
+    prompt = "Hello, how are you today?"
+    assert is_direct_answer_prompt(prompt)
+    clf = classify_prompt(prompt, THRESHOLD, LOCAL_MODEL, REMOTE_MODEL)
+    assert clf.prompt_type == "DIRECT_ANSWER", clf
+    assert clf.num_agents == 1
+    assert not clf.decomposition_used
+    plan = plan_request(prompt, THRESHOLD, LOCAL_MODEL, REMOTE_MODEL)
+    assert plan.single_route
+    assert len(plan.tasks) == 1
+    assert plan.tasks[0] == prompt
+
+
+def test_hi_does_not_spawn_swarm():
+    clf = classify_prompt("Hi", THRESHOLD, LOCAL_MODEL, REMOTE_MODEL)
+    plan = plan_request("Hi", THRESHOLD, LOCAL_MODEL, REMOTE_MODEL)
+    assert clf.num_agents == 1
+    assert not clf.decomposition_used
+    assert plan.single_route
+    assert len(plan.tasks) == 1
+
+
+def test_what_is_cambodia_single_route_not_swarm():
+    prompt = "What is Cambodia?"
+    assert is_direct_answer_prompt(prompt)
+    clf = classify_prompt(prompt, THRESHOLD, LOCAL_MODEL, REMOTE_MODEL)
+    assert clf.num_agents == 1, clf
+    assert not clf.decomposition_used
+    plan = plan_request(prompt, THRESHOLD, LOCAL_MODEL, REMOTE_MODEL)
+    assert plan.single_route
+    assert len(plan.tasks) == 1
+
+
+def test_where_is_cambodia_single_agent_escalates_remote():
+    prompt = "Where is Cambodia?"
+    clf = classify_prompt(prompt, THRESHOLD, LOCAL_MODEL, REMOTE_MODEL)
+    assert clf.prompt_type == "REMOTE_ESCALATE", clf
+    assert clf.num_agents == 1
+    assert not clf.decomposition_used
+    plan = plan_request(prompt, THRESHOLD, LOCAL_MODEL, REMOTE_MODEL)
+    assert plan.single_route
+    assert plan.global_route == "REMOTE"
+
+
+def test_mixed_prompt_decomposes_only_when_beneficial():
+    assert is_beneficial_to_decompose(MULTI_TASK_PROMPT)
+    clf = classify_prompt(MULTI_TASK_PROMPT, THRESHOLD, LOCAL_MODEL, REMOTE_MODEL)
+    assert clf.prompt_type == "LOCAL_DECOMPOSE", clf
+    assert clf.decomposition_used
+    assert clf.num_agents > 1
+    plan = plan_request(MULTI_TASK_PROMPT, THRESHOLD, LOCAL_MODEL, REMOTE_MODEL)
+    assert not plan.single_route
+    assert len(plan.tasks) > 1
+
+
+def test_trivial_prompt_not_beneficial_to_decompose():
+    assert not is_beneficial_to_decompose("Thanks")
+    assert not is_beneficial_to_decompose("What is Cambodia?")
+
+
+def test_composite_character_level_single_route():
+    plan = plan_request(COMPOSITE_PROMPT, THRESHOLD, LOCAL_MODEL, REMOTE_MODEL)
+    assert plan.single_route
+    assert plan.tasks == [COMPOSITE_PROMPT]
+    assert plan.classification.prompt_type == "REMOTE_ESCALATE"
 
 
 # --- Router-first defaults ----------------------------------------------------------
@@ -183,15 +257,15 @@ def test_spell_apple_backward_routes_remote():
 def test_composite_prompt_pins_remote_single_task():
     plan = plan_request(COMPOSITE_PROMPT, THRESHOLD, LOCAL_MODEL, REMOTE_MODEL)
     assert plan.global_route == "REMOTE", plan
-    assert plan.single_remote is True
+    assert plan.single_route
     assert plan.tasks == [COMPOSITE_PROMPT]
 
 
 # --- Heuristic planner (no local LLM) -----------------------------------------------
 
 
-def test_heuristic_split_without_local_llm():
-    parts = heuristic_task_split("capital of France, capital of London, math: 2+12")
+def test_heuristic_split_available_for_multi_task():
+    parts = heuristic_task_split(MULTI_TASK_PROMPT)
     assert len(parts) >= 2
     assert task_dispatcher_never_calls_ollama()
 

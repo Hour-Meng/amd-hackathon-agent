@@ -278,6 +278,11 @@ class RouteResult:
     wall_clock_ms: float | None = None
     sub_results: list[RouteResult] = field(default_factory=list)
     diagnostics: dict[str, object] = field(default_factory=dict)
+    # Hierarchical orchestration metadata (classifier → planner → executor).
+    prompt_type: str | None = None
+    decomposition_used: bool = False
+    num_agents: int = 1
+    escalation_reason: str | None = None
 
 
 def _has_ui_context() -> bool:
@@ -804,7 +809,7 @@ _HEURISTIC_SPLIT = re.compile(
 
 
 def heuristic_task_split(prompt: str) -> list[str]:
-    """Router-first task split without any local LLM planner call."""
+    """Heuristic task split without any local LLM planner call."""
     cleaned = prompt.strip()
     if not cleaned:
         return [cleaned]
@@ -816,6 +821,239 @@ def heuristic_task_split(prompt: str) -> list[str]:
         if len(parts) > 1:
             return parts
     return [cleaned]
+
+
+SINGLE_TURN_MAX_CHARS = 120
+PromptType = Literal["DIRECT_ANSWER", "LOCAL_DECOMPOSE", "REMOTE_ESCALATE"]
+
+
+def is_direct_answer_prompt(prompt: str) -> bool:
+    """
+    Greetings, small talk, one-sentence questions, and one-step responses.
+    These must never be decomposed into a swarm.
+    """
+    stripped = prompt.strip()
+    if not stripped:
+        return True
+    # Multi-segment comma lists are never single-turn direct answers.
+    if stripped.count(",") >= 2 and len(stripped) > 35:
+        return False
+    if is_local_trivial_whitelisted(stripped):
+        return True
+    if is_simple_format_task(stripped):
+        return True
+    if would_math_intercept(stripped):
+        return True
+    if is_character_level_task(stripped):
+        return False
+    # Single-turn: at most one question mark, bounded length, not a comma-list.
+    if stripped.count("?") <= 1 and len(stripped) <= SINGLE_TURN_MAX_CHARS:
+        if stripped.count(",") < 2:
+            return True
+    return False
+
+
+def is_beneficial_to_decompose(prompt: str) -> bool:
+    """True only when multiple independent substantial tasks justify a swarm."""
+    if is_direct_answer_prompt(prompt):
+        return False
+    if is_character_level_task(prompt):
+        return False
+    parts = heuristic_task_split(prompt)
+    if len(parts) < 2:
+        return False
+    substantial = [
+        part
+        for part in parts
+        if len(part) > 8 and not is_local_trivial_whitelisted(part)
+    ]
+    if len(substantial) >= 2:
+        return True
+    # Comma-list prompts with 3+ segments are multi-task even when segments are short.
+    if len(parts) >= 3 and prompt.count(",") >= 2 and len(prompt) > 35:
+        return True
+    return False
+
+
+@dataclass
+class ClassificationResult:
+    """Level-1 cheap classifier output — runs on the full prompt before any split."""
+
+    prompt_type: PromptType
+    prompt_label: str
+    route: Literal["LOCAL", "REMOTE"]
+    reason: str
+    confidence_score: float
+    escalation_reason: str | None = None
+    decomposition_used: bool = False
+    num_agents: int = 1
+
+
+def classify_prompt(
+    prompt: str,
+    threshold: int,
+    active_local_model: str,
+    active_remote_model: str,
+    *,
+    has_image: bool = False,
+) -> ClassificationResult:
+    """
+    Hierarchical level-1 reader/classifier (rule-based, no LLM).
+
+    Decides DIRECT_ANSWER | LOCAL_DECOMPOSE | REMOTE_ESCALATE on the WHOLE prompt
+    before any decomposition or model call.
+    """
+    local_unavailable = not has_image and is_local_unavailable(active_local_model)
+    decision = route_decision(
+        prompt,
+        threshold,
+        has_image=has_image,
+        active_local_model=active_local_model,
+        active_remote_model=active_remote_model,
+        local_unavailable=local_unavailable,
+        memory_pressure=get_memory_usage() if not has_image else None,
+    )
+
+    if has_image:
+        return ClassificationResult(
+            prompt_type="REMOTE_ESCALATE",
+            prompt_label="image",
+            route="REMOTE",
+            reason="vision:remote",
+            confidence_score=0.95,
+            escalation_reason="vision:remote",
+            num_agents=1,
+        )
+
+    if is_character_level_task(prompt):
+        return ClassificationResult(
+            prompt_type="REMOTE_ESCALATE",
+            prompt_label="character_level",
+            route="REMOTE",
+            reason=CHARACTER_LEVEL_GUARD_REASON,
+            confidence_score=0.99,
+            escalation_reason=CHARACTER_LEVEL_GUARD_REASON,
+            num_agents=1,
+        )
+
+    if had_prior_local_failure(prompt):
+        return ClassificationResult(
+            prompt_type="REMOTE_ESCALATE",
+            prompt_label="prior_failure",
+            route="REMOTE",
+            reason=PRIOR_FAILURE_REASON,
+            confidence_score=0.85,
+            escalation_reason=PRIOR_FAILURE_REASON,
+            num_agents=1,
+        )
+
+    # Direct-answer guard: greetings, small talk, single-sentence questions.
+    if is_direct_answer_prompt(prompt):
+        if is_local_trivial_whitelisted(prompt):
+            label = "greeting"
+        elif would_math_intercept(prompt):
+            label = "math"
+        else:
+            label = "single_turn"
+        ptype: PromptType = (
+            "REMOTE_ESCALATE" if decision.route == "REMOTE" else "DIRECT_ANSWER"
+        )
+        return ClassificationResult(
+            prompt_type=ptype,
+            prompt_label=label,
+            route=decision.route,
+            reason=decision.reason,
+            confidence_score=decision.confidence_score,
+            escalation_reason=decision.reason if decision.route == "REMOTE" else None,
+            decomposition_used=False,
+            num_agents=1,
+        )
+
+    # Cloud escalation for hard prompts that do not benefit from splitting.
+    if decision.route == "REMOTE" and not is_beneficial_to_decompose(prompt):
+        return ClassificationResult(
+            prompt_type="REMOTE_ESCALATE",
+            prompt_label="cloud_escalation",
+            route="REMOTE",
+            reason=decision.reason,
+            confidence_score=decision.confidence_score,
+            escalation_reason=decision.reason,
+            num_agents=1,
+        )
+
+    # Level-2: decompose only when multiple independent tasks justify it.
+    if is_beneficial_to_decompose(prompt):
+        parts = heuristic_task_split(prompt)
+        if any(is_character_level_task(part) for part in parts):
+            return ClassificationResult(
+                prompt_type="REMOTE_ESCALATE",
+                prompt_label="character_level_subtask",
+                route="REMOTE",
+                reason=CHARACTER_LEVEL_GUARD_REASON,
+                confidence_score=0.99,
+                escalation_reason=CHARACTER_LEVEL_GUARD_REASON,
+                num_agents=1,
+            )
+        return ClassificationResult(
+            prompt_type="LOCAL_DECOMPOSE",
+            prompt_label="multi_task",
+            route=decision.route,
+            reason="decompose:beneficial",
+            confidence_score=decision.confidence_score,
+            decomposition_used=True,
+            num_agents=len(parts),
+        )
+
+    return ClassificationResult(
+        prompt_type="DIRECT_ANSWER" if decision.route == "LOCAL" else "REMOTE_ESCALATE",
+        prompt_label="single_route",
+        route=decision.route,
+        reason=decision.reason,
+        confidence_score=decision.confidence_score,
+        escalation_reason=decision.reason if decision.route == "REMOTE" else None,
+        num_agents=1,
+    )
+
+
+def _log_orchestration(
+    classification: ClassificationResult,
+    prompt: str,
+    *,
+    latency_ms: float = 0.0,
+) -> None:
+    preview = prompt.strip().replace("\n", " ")[:60]
+    logger.info(
+        "ORCHESTRATION route_decision=%s prompt_type=%s prompt_label=%s "
+        "decomposition_used=%s num_agents=%s escalation_reason=%s "
+        "confidence=%.2f latency_ms=%.1f prompt=%r",
+        classification.route,
+        classification.prompt_type,
+        classification.prompt_label,
+        classification.decomposition_used,
+        classification.num_agents,
+        classification.escalation_reason,
+        classification.confidence_score,
+        latency_ms,
+        preview,
+    )
+
+
+def _attach_orchestration(
+    result: RouteResult, classification: ClassificationResult
+) -> RouteResult:
+    result.prompt_type = classification.prompt_type
+    result.decomposition_used = classification.decomposition_used
+    result.num_agents = classification.num_agents
+    result.escalation_reason = classification.escalation_reason
+    result.confidence_score = classification.confidence_score
+    result.diagnostics["orchestration"] = {
+        "prompt_type": classification.prompt_type,
+        "prompt_label": classification.prompt_label,
+        "decomposition_used": classification.decomposition_used,
+        "num_agents": classification.num_agents,
+        "escalation_reason": classification.escalation_reason,
+    }
+    return result
 
 
 def adjust_prompt_for_remote(
@@ -914,16 +1152,18 @@ def task_dispatcher(
 
 @dataclass
 class SwarmPlan:
-    """Pre-swarm plan produced by the authoritative global router.
-
-    `single_remote` means the whole prompt must be served as ONE remote task and
-    the decomposer is NOT allowed to split it (character-level global override).
-    """
+    """Pre-swarm plan from the hierarchical classifier + planner."""
 
     tasks: list[str]
     global_route: Literal["LOCAL", "REMOTE"]
     reason: str
-    single_remote: bool
+    single_route: bool
+    classification: ClassificationResult
+
+    @property
+    def single_remote(self) -> bool:
+        """Backward-compatible alias for single-route plans."""
+        return self.single_route
 
 
 def plan_request(
@@ -935,41 +1175,74 @@ def plan_request(
     allow_heavy_local: bool = False,
 ) -> SwarmPlan:
     """
-    Authoritative pre-swarm routing. Runs a GLOBAL route_decision on the FULL
-    prompt BEFORE any decomposition.
+    Hierarchical orchestration planner.
 
-    If the full prompt contains character-level content, the entire request is
-    pinned REMOTE and kept as a single task — the decomposer may not override the
-    global route for the character-level portion. Otherwise the local planner is
-    allowed to split the prompt into a sub-agent swarm.
+    Level-1: classify the WHOLE prompt (no split yet).
+    Level-2: decompose only when LOCAL_DECOMPOSE is beneficial.
+    Level-3: per-task execution handles cloud escalation.
     """
-    decision = route_decision(
+    _ = allow_heavy_local
+    started = time.perf_counter()
+    classification = classify_prompt(
         prompt,
         threshold,
-        has_image=False,
-        active_local_model=active_local_model,
-        active_remote_model=active_remote_model,
-        local_unavailable=is_local_unavailable(active_local_model),
-        memory_pressure=get_memory_usage(),
-        allow_heavy_local=allow_heavy_local,
+        active_local_model,
+        active_remote_model,
+    )
+    _log_orchestration(
+        classification,
+        prompt,
+        latency_ms=(time.perf_counter() - started) * 1000.0,
     )
 
-    if decision.reason == CHARACTER_LEVEL_GUARD_REASON:
-        # Global character-level override: one remote task, no decomposition.
+    # Agent-swarm guard: direct answers and escalations are always single-route.
+    if (
+        classification.num_agents == 1
+        or not classification.decomposition_used
+        or classification.prompt_type != "LOCAL_DECOMPOSE"
+    ):
+        return SwarmPlan(
+            tasks=[prompt],
+            global_route=classification.route,
+            reason=classification.reason,
+            single_route=True,
+            classification=classification,
+        )
+
+    parts = heuristic_task_split(prompt)
+    if any(is_character_level_task(part) for part in parts):
+        escalated = ClassificationResult(
+            prompt_type="REMOTE_ESCALATE",
+            prompt_label="character_level_subtask",
+            route="REMOTE",
+            reason=CHARACTER_LEVEL_GUARD_REASON,
+            confidence_score=0.99,
+            escalation_reason=CHARACTER_LEVEL_GUARD_REASON,
+            num_agents=1,
+        )
         return SwarmPlan(
             tasks=[prompt],
             global_route="REMOTE",
-            reason=decision.reason,
-            single_remote=True,
+            reason=CHARACTER_LEVEL_GUARD_REASON,
+            single_route=True,
+            classification=escalated,
         )
 
-    # Non-character-level: decomposition may reduce cost without breaking semantics.
-    tasks = task_dispatcher(prompt, active_local_model, allow_heavy_local=allow_heavy_local)
+    if len(parts) <= 1:
+        return SwarmPlan(
+            tasks=[prompt],
+            global_route=classification.route,
+            reason=classification.reason,
+            single_route=True,
+            classification=classification,
+        )
+
     return SwarmPlan(
-        tasks=tasks,
-        global_route=decision.route,
-        reason=decision.reason,
-        single_remote=False,
+        tasks=parts,
+        global_route=classification.route,
+        reason=classification.reason,
+        single_route=False,
+        classification=classification,
     )
 
 
@@ -1155,9 +1428,16 @@ def process_user_request(
     *,
     allow_heavy_local: bool = False,
 ) -> RouteResult:
-    """Top-level orchestrator: decomposition → swarm or single pipeline."""
+    """Top-level orchestrator: classify → plan → single route or swarm."""
     if image_file is not None:
-        return route_and_execute(
+        clf = classify_prompt(
+            prompt,
+            threshold,
+            active_local_model,
+            active_remote_model,
+            has_image=True,
+        )
+        result = route_and_execute(
             prompt,
             threshold,
             api_key,
@@ -1166,6 +1446,7 @@ def process_user_request(
             image_file=image_file,
             allow_heavy_local=allow_heavy_local,
         )
+        return _attach_orchestration(result, clf)
 
     plan = plan_request(
         prompt,
@@ -1175,9 +1456,8 @@ def process_user_request(
         allow_heavy_local=allow_heavy_local,
     )
 
-    # Character-level global override: serve the whole prompt as one remote task.
-    if plan.single_remote:
-        return route_and_execute(
+    if plan.single_route or plan.classification.num_agents <= 1:
+        result = route_and_execute(
             prompt,
             threshold,
             api_key,
@@ -1185,26 +1465,28 @@ def process_user_request(
             active_remote_model,
             allow_heavy_local=allow_heavy_local,
         )
+        return _attach_orchestration(result, plan.classification)
 
-    if len(plan.tasks) > 1:
-        return execute_agent_swarm(
-            plan.tasks,
-            threshold,
-            api_key,
-            active_local_model,
-            active_remote_model,
-            allow_heavy_local=allow_heavy_local,
-        )
-
-    single_prompt = plan.tasks[0] if plan.tasks else prompt
-    return route_and_execute(
-        single_prompt,
+    result = execute_agent_swarm(
+        plan.tasks,
         threshold,
         api_key,
         active_local_model,
         active_remote_model,
         allow_heavy_local=allow_heavy_local,
     )
+    result.decomposition_used = True
+    result.num_agents = len(plan.tasks)
+    result.prompt_type = plan.classification.prompt_type
+    result.escalation_reason = plan.classification.escalation_reason
+    result.diagnostics["orchestration"] = {
+        "prompt_type": plan.classification.prompt_type,
+        "prompt_label": plan.classification.prompt_label,
+        "decomposition_used": True,
+        "num_agents": len(plan.tasks),
+        "escalation_reason": plan.classification.escalation_reason,
+    }
+    return result
 
 
 def _route_vision(
@@ -1646,6 +1928,15 @@ def render_metrics(result: RouteResult) -> None:
 
     with col1:
         st.markdown(f"**Route**  \n{route_label}")
+        if result.prompt_type:
+            mode = {
+                "DIRECT_ANSWER": "🎯 Direct answer (1 agent)",
+                "LOCAL_DECOMPOSE": "🔀 Decomposed swarm",
+                "REMOTE_ESCALATE": "☁️ Cloud escalation (1 agent)",
+            }.get(result.prompt_type, result.prompt_type)
+            st.caption(mode)
+        if result.decomposition_used:
+            st.caption(f"Agents spawned: {result.num_agents}")
         if result.route == "FALLBACK_REMOTE":
             st.caption(f"↩️ Actual backend: Fireworks `{result.model_used}`")
         elif result.route == "AGENT_SWARM" and result.fallback_used:
@@ -1654,6 +1945,8 @@ def render_metrics(result: RouteResult) -> None:
             st.caption(f"Backend: `{result.model_used}`")
         if result.routing_reason and result.route != "AGENT_SWARM":
             st.caption(f"Reason: {result.routing_reason}")
+        if result.escalation_reason and result.route != "AGENT_SWARM":
+            st.caption(f"Escalation: {result.escalation_reason}")
         if result.confidence_score is not None and result.route != "AGENT_SWARM":
             st.caption(f"Confidence: {result.confidence_score:.0%}")
 
@@ -1943,10 +2236,21 @@ def main() -> None:
                 st.image(uploaded_image, width=200)
 
         with st.chat_message("assistant"):
-            # Authoritative pre-swarm routing: a global character-level prompt is
-            # pinned REMOTE as a single task and the decomposer cannot override it.
             if uploaded_image is not None:
-                plan = SwarmPlan([prompt], "REMOTE", "vision:remote", single_remote=False)
+                clf = classify_prompt(
+                    prompt,
+                    threshold,
+                    active_local_model,
+                    active_remote_model,
+                    has_image=True,
+                )
+                plan = SwarmPlan(
+                    tasks=[prompt],
+                    global_route="REMOTE",
+                    reason="vision:remote",
+                    single_route=True,
+                    classification=clf,
+                )
             else:
                 plan = plan_request(
                     prompt,
@@ -1955,15 +2259,18 @@ def main() -> None:
                     active_remote_model,
                 )
 
-            if plan.single_remote:
-                st.info(
-                    "🔒 Character-level content detected — routing the full prompt "
-                    "REMOTE as a single task (decomposition skipped)."
-                )
+            clf = plan.classification
+            if clf.prompt_type == "DIRECT_ANSWER":
+                st.caption("🎯 Direct answer — single agent, no decomposition.")
+            elif clf.prompt_type == "REMOTE_ESCALATE":
+                st.caption("☁️ Cloud escalation — single remote agent.")
+            elif clf.decomposition_used:
+                st.caption(f"🔀 Decomposed into {clf.num_agents} sub-agents.")
 
             use_swarm = (
-                uploaded_image is None
-                and not plan.single_remote
+                clf.decomposition_used
+                and clf.num_agents > 1
+                and not plan.single_route
                 and len(plan.tasks) > 1
             )
 
@@ -1980,12 +2287,13 @@ def main() -> None:
                         active_local_model,
                         active_remote_model,
                     )
+                    result = _attach_orchestration(result, clf)
+                    result.decomposition_used = True
+                    result.num_agents = len(plan.tasks)
                     status.update(label="Agent Swarm complete", state="complete")
             else:
                 with st.spinner("Routing..."):
-                    single_prompt = prompt if plan.single_remote else (
-                        plan.tasks[0] if plan.tasks else prompt
-                    )
+                    single_prompt = prompt
                     result = route_and_execute(
                         single_prompt,
                         threshold,
@@ -1994,6 +2302,7 @@ def main() -> None:
                         active_remote_model,
                         image_file=uploaded_image,
                     )
+                    result = _attach_orchestration(result, clf)
 
             assistant_message = {
                 "role": "assistant",
