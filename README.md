@@ -60,8 +60,8 @@ User prompt
 | Route | Backend | When |
 |-------|---------|------|
 | `MATH_PYTHON` | Python `eval` (sandboxed) | Embedded expression with `+ - * /` |
-| `TEXT_LOCAL` | Ollama `llama3.2` | Short text (≤ char threshold) |
-| `TEXT_REMOTE` | Fireworks `qwen2p5-72b-instruct` | Long text (after distillation) |
+| `TEXT_LOCAL` | Ollama `qwen2.5:0.5b` (utility only) | Trivial greetings/format when healthy |
+| `TEXT_REMOTE` | Fireworks `minimax-m3` (fallback: `qwen3p7-plus`) | Default generator for all other prompts |
 | `VISION_REMOTE` | Fireworks `llama-v3p2-11b-vision-instruct` | Image uploaded |
 | `AGENT_SWARM` | Parallel sub-agents | Multiple decomposed tasks |
 
@@ -70,8 +70,8 @@ User prompt
 ## Prerequisites
 
 1. **Python 3.11+** (3.12 tested)
-2. **Ollama** running locally with `llama3.2` pulled  
-   Required for: local text inference, prompt distillation, and task decomposition.
+2. **Ollama** running locally with `qwen2.5:0.5b` pulled (optional utility model)  
+   Used only for trivial greetings/format — **not** the default generator.
 3. **Fireworks AI API key**  
    Required for: long-text remote routes and vision. Math and short local routes work without it.
 
@@ -83,8 +83,8 @@ User prompt
 # Start the server (if not already running)
 ollama serve
 
-# In another terminal, pull the model used by app.py
-ollama pull llama3.2
+# In another terminal, pull the optional local utility model
+ollama pull qwen2.5:0.5b
 ```
 
 Verify Ollama is reachable:
@@ -92,6 +92,8 @@ Verify Ollama is reachable:
 ```bash
 curl http://localhost:11434/api/tags
 ```
+
+**Note:** The router sends most prompts to Fireworks remote. The local model handles only trivial deterministic tasks (greetings, math). If you previously pulled `qwen2.5:32b`, you can remove it: `ollama rm qwen2.5:32b`.
 
 ---
 
@@ -130,7 +132,8 @@ Most settings are in the **sidebar** at runtime:
 | Setting | Default | Purpose |
 |---------|---------|---------|
 | **Fireworks API Key** | _(empty)_ | Required for `TEXT_REMOTE` and `VISION_REMOTE` |
-| **Text Complexity Threshold** | 50 chars | Prompts longer than this go remote (after distillation) |
+| **Local Utility Model** | `qwen2.5:0.5b` | Greetings/format only — remote is the default |
+| **Text Complexity Threshold** | 30 (score) | Prompts scoring above this route REMOTE |
 | **Image upload** | optional | Forces vision route on next message |
 
 No `.env` file is required for the Streamlit demo—the API key is entered in the UI.
@@ -142,8 +145,8 @@ The CLI reads environment variables (optional overrides):
 ```bash
 export FIREWORKS_API_KEY="fw_..."
 export LOCAL_LLM_BASE_URL="http://localhost:11434/v1"
-export LOCAL_LLM_MODEL="llama3.2:3b"
-export FIREWORKS_MODEL="accounts/fireworks/models/qwen3p7-max"
+export LOCAL_LLM_MODEL="qwen2.5:0.5b"
+export FIREWORKS_MODEL="accounts/fireworks/models/minimax-m3"
 ```
 
 Get a Fireworks key at [https://fireworks.ai](https://fireworks.ai).
@@ -290,7 +293,7 @@ There is **no** root `requirements.txt`, `src/`, `tests/`, or `.env.example`—u
 
 ```bash
 ollama serve
-ollama pull llama3.2
+ollama pull qwen2.5:0.5b
 curl http://localhost:11434/api/tags
 ```
 
@@ -309,7 +312,7 @@ pip install -r my_routing_agent/requirements.txt
 
 ### Task decomposition returns one task for a multi-question prompt
 
-Ollama must be running. The planner uses `llama3.2` at `temperature: 0.0`. Retry with clearer comma-separated questions.
+Ollama must be running for optional local utility routes. The router uses heuristic task splitting (no local LLM planner). Retry with clearer comma-separated questions.
 
 ### Math not intercepted
 

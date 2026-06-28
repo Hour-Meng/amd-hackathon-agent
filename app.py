@@ -12,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import BinaryIO, Literal
 
+import threading
+
 import requests
 import streamlit as st
 from PIL import Image
@@ -24,9 +26,51 @@ if not logger.handlers:
     )
 
 LOCAL_ENDPOINT = "http://localhost:11434/api/generate"
+LOCAL_TAGS_ENDPOINT = "http://localhost:11434/api/tags"
 REMOTE_ENDPOINT = "https://api.fireworks.ai/inference/v1/chat/completions"
 
+# --- Local-backend safety: health gate, timeouts, memory-aware routing ------------
+# A heavy local model (e.g. qwen2.5:32b) can freeze the whole machine. These bounds
+# guarantee the Streamlit app never blocks indefinitely on a local request.
+LOCAL_HEALTH_TTL_SECONDS = 30.0      # cache a dead/alive verdict to avoid retry storms
+LOCAL_HEALTH_TIMEOUT_SECONDS = 2.0   # fast probe of the Ollama backend
+LOCAL_INFERENCE_TIMEOUT_SECONDS = 60  # strict read-timeout for a normal local model
+LOCAL_HEAVY_INFERENCE_TIMEOUT_SECONDS = 25  # tighter ceiling for heavy local models
+LOCAL_DECOMP_TIMEOUT_SECONDS = 20    # planner/distill local calls must stay snappy
+MEMORY_PRESSURE_THRESHOLD = 0.85     # bypass heavy local above this RAM utilization
+HEAVY_LOCAL_PARAM_BILLIONS = 30      # >= this many params counts as "heavy"
+TRIVIAL_PROMPT_MAX_CHARS = 15        # very short prompts are treated as trivial
+
+# Routing reasons emitted when a heavy local model is intentionally skipped.
+LOCAL_UNAVAILABLE_REASON = "local-backend-unavailable"
+MEMORY_PRESSURE_REASON = "memory-pressure:bypass-heavy-local"
+HEAVY_LOCAL_BYPASS_REASON = "heavy-local-bypass:trivial"
+LOCAL_TIMEOUT_REASON = "local-timeout:fallback-remote"
+ROUTER_DEFAULT_REMOTE = "router-default:remote"
+REMOTE_FACTUAL_REASON = "remote-required:factual"
+REMOTE_CODE_REASON = "remote-required:code"
+REMOTE_LONG_REASON = "remote-required:long"
+REMOTE_MULTIHOP_REASON = "remote-required:multi-hop"
+PRIOR_FAILURE_REASON = "remote-required:prior-local-failure"
+LOCAL_GREETING_REASON = "local-allowed:greeting"
+LOCAL_MATH_REASON = "local-allowed:math-python"
+LONG_PROMPT_CHARS = 180
+CODE_GEN_PATTERNS = (
+    "write code",
+    "write a function",
+    "implement ",
+    "debug this",
+    "python script",
+    "javascript",
+    "typescript",
+    "def ",
+    "class ",
+    "```",
+)
+FORMAT_PATTERNS = ("to uppercase", "to lowercase", "capitalize ")
+
 # Defaults / catalogs surfaced in the sidebar.
+# Local model is a lightweight utility (greetings/math/format only) — NOT the default generator.
 DEFAULT_LOCAL_MODEL = "qwen2.5:0.5b"
 CUSTOM_MODEL_SENTINEL = "Custom..."
 REMOTE_MODEL_OPTIONS = [
@@ -229,6 +273,7 @@ class RouteResult:
     fallback_reason: str | None = None
     routing_reason: str | None = None
     complexity_score: int | None = None
+    confidence_score: float | None = None
     retries: int = 0
     wall_clock_ms: float | None = None
     sub_results: list[RouteResult] = field(default_factory=list)
@@ -289,9 +334,21 @@ CHARACTER_LEVEL_PATTERNS = (
     "scramble",
 )
 CHARACTER_LEVEL_GUARD_REASON = "character-level tokenization guard"
+FACTUAL_RISK_GUARD_REASON = REMOTE_FACTUAL_REASON  # alias for tests / telemetry
 
-# Geo/civic/identity/encyclopedia facts that weak local models must not answer.
-FACTUAL_RISK_GUARD_REASON = "factual-risk:weak-local"
+# Reasons that must skip local distillation (backend unsafe or exact text required).
+LOCAL_DISTILL_UNSAFE_REASONS = frozenset(
+    {
+        LOCAL_UNAVAILABLE_REASON,
+        MEMORY_PRESSURE_REASON,
+        HEAVY_LOCAL_BYPASS_REASON,
+        CHARACTER_LEVEL_GUARD_REASON,
+        REMOTE_FACTUAL_REASON,
+        PRIOR_FAILURE_REASON,
+    }
+)
+
+# Geo/civic/identity/encyclopedia facts — always remote in router-first mode.
 FACTUAL_RISK_PATTERNS = (
     "where is ",
     "where are ",
@@ -353,6 +410,160 @@ def is_local_trivial_whitelisted(prompt: str) -> bool:
     return False
 
 
+def is_code_generation_prompt(prompt: str) -> bool:
+    lowered = prompt.lower()
+    return any(pattern in lowered for pattern in CODE_GEN_PATTERNS)
+
+
+def is_simple_format_task(prompt: str) -> bool:
+    lowered = prompt.lower()
+    return any(pattern in lowered for pattern in FORMAT_PATTERNS) and not is_character_level_task(
+        prompt
+    )
+
+
+def is_multi_hop_prompt(prompt: str) -> bool:
+    """Multi-part or analytical prompts that need remote reasoning."""
+    lowered = prompt.lower()
+    if lowered.count("?") > 1:
+        return True
+    if " and " in lowered and any(keyword in lowered for keyword in COMPLEXITY_KEYWORDS):
+        return True
+    if lowered.count(",") >= 2 and any(
+        kw in lowered for kw in ("what", "who", "where", "capital", "tell me")
+    ):
+        return True
+    return any(keyword in lowered for keyword in COMPLEXITY_KEYWORDS)
+
+
+def is_local_capable_prompt(prompt: str) -> bool:
+    """Prompts within the local capability ceiling (greetings/format — no LLM facts)."""
+    if is_local_trivial_whitelisted(prompt):
+        return True
+    return is_simple_format_task(prompt)
+
+
+def would_math_intercept(prompt: str) -> bool:
+    """True when deterministic math eval would handle the prompt (no LLM)."""
+    return safe_math_agent(prompt, time.perf_counter()) is not None
+
+
+_PRIOR_LOCAL_FAILURES: set[str] = set()
+_PRIOR_FAILURE_LOCK = threading.Lock()
+
+
+def _prompt_failure_key(prompt: str) -> str:
+    return prompt.strip().lower()[:300]
+
+
+def mark_prior_local_failure(prompt: str) -> None:
+    with _PRIOR_FAILURE_LOCK:
+        _PRIOR_LOCAL_FAILURES.add(_prompt_failure_key(prompt))
+
+
+def had_prior_local_failure(prompt: str) -> bool:
+    with _PRIOR_FAILURE_LOCK:
+        return _prompt_failure_key(prompt) in _PRIOR_LOCAL_FAILURES
+
+
+def reset_prior_local_failures() -> None:
+    with _PRIOR_FAILURE_LOCK:
+        _PRIOR_LOCAL_FAILURES.clear()
+
+
+_HEAVY_PARAM_PATTERN = re.compile(r":(\d+(?:\.\d+)?)b\b", re.IGNORECASE)
+
+
+def is_heavy_local_model(model_id: str) -> bool:
+    """
+    True for large local models (>= HEAVY_LOCAL_PARAM_BILLIONS params, e.g.
+    qwen2.5:32b / llama3:70b) that can freeze a laptop on inference.
+    """
+    if not model_id:
+        return False
+    match = _HEAVY_PARAM_PATTERN.search(model_id.lower())
+    if not match:
+        return False
+    try:
+        return float(match.group(1)) >= HEAVY_LOCAL_PARAM_BILLIONS
+    except ValueError:
+        return False
+
+
+def is_trivial_prompt(prompt: str) -> bool:
+    """Short/casual prompts that should never warrant a heavy local model."""
+    stripped = prompt.strip()
+    if not stripped:
+        return True
+    if is_local_trivial_whitelisted(stripped):
+        return True
+    return len(stripped) <= TRIVIAL_PROMPT_MAX_CHARS and "?" not in stripped
+
+
+def get_memory_usage() -> float | None:
+    """System RAM utilization in [0, 1], or None when psutil is unavailable."""
+    try:
+        import psutil
+
+        return float(psutil.virtual_memory().percent) / 100.0
+    except Exception:
+        return None
+
+
+def is_memory_constrained(threshold: float = MEMORY_PRESSURE_THRESHOLD) -> bool:
+    """True only when memory usage is known AND at/above the pressure threshold."""
+    usage = get_memory_usage()
+    return usage is not None and usage >= threshold
+
+
+# Health-gate cache: model_id -> (expiry_epoch, healthy). Guarded for swarm threads.
+_LOCAL_HEALTH_LOCK = threading.Lock()
+_LOCAL_HEALTH_CACHE: dict[str, tuple[float, bool]] = {}
+
+
+def reset_local_health_cache() -> None:
+    """Clear the cached health verdicts (used by tests and the UI refresh)."""
+    with _LOCAL_HEALTH_LOCK:
+        _LOCAL_HEALTH_CACHE.clear()
+
+
+def check_local_health(model_id: str, *, ttl: float = LOCAL_HEALTH_TTL_SECONDS) -> bool:
+    """
+    Probe the Ollama backend for liveness and that `model_id` is actually pulled.
+    The verdict is cached for `ttl` seconds so a dead backend is not hammered.
+    """
+    key = (model_id or "").strip()
+    now = time.time()
+
+    with _LOCAL_HEALTH_LOCK:
+        cached = _LOCAL_HEALTH_CACHE.get(key)
+        if cached and cached[0] > now:
+            return cached[1]
+
+    healthy = False
+    try:
+        resp = requests.get(LOCAL_TAGS_ENDPOINT, timeout=LOCAL_HEALTH_TIMEOUT_SECONDS)
+        if resp.status_code == 200:
+            names = {str(m.get("name", "")) for m in resp.json().get("models", [])}
+            if not names:
+                # Server is up but reports no catalog; allow the attempt.
+                healthy = True
+            else:
+                healthy = key in names or f"{key}:latest" in names
+    except Exception as exc:
+        logger.warning("Local health check failed for %s: %s", key, exc)
+        healthy = False
+
+    with _LOCAL_HEALTH_LOCK:
+        _LOCAL_HEALTH_CACHE[key] = (now + ttl, healthy)
+    return healthy
+
+
+def is_local_unavailable(model_id: str) -> bool:
+    """Convenience inverse of check_local_health (cached)."""
+    return not check_local_health(model_id)
+
+
 @dataclass
 class RouterDecision:
     """Authoritative routing decision produced before any backend is touched."""
@@ -361,6 +572,7 @@ class RouterDecision:
     complexity_score: int
     reason: str
     model_id: str
+    confidence_score: float = 0.0
 
 
 def route_decision(
@@ -370,60 +582,131 @@ def route_decision(
     has_image: bool,
     active_local_model: str,
     active_remote_model: str,
+    local_unavailable: bool = False,
+    memory_pressure: float | None = None,
+    allow_heavy_local: bool = False,
 ) -> RouterDecision:
     """
-    Single source of truth for LOCAL vs REMOTE. The dispatcher MUST honor this.
+    Router-first single source of truth. Runs BEFORE any model call.
 
-    Priority: image → character-level guard → factual-risk (weak local) → complexity.
+    Default is REMOTE (Fireworks). LOCAL is allowed only for deterministic math,
+    short greetings, and simple formatting when the local backend is healthy.
     """
     score = min(100, calculate_complexity(prompt))
     remote_model = normalize_model_id(active_remote_model) or DEFAULT_REMOTE_MODEL
 
     if has_image:
-        return RouterDecision("REMOTE", 100, "vision:remote", remote_model)
+        return RouterDecision("REMOTE", score, "vision:remote", remote_model, 0.95)
 
     if is_character_level_task(prompt):
         return RouterDecision(
-            "REMOTE", 100, CHARACTER_LEVEL_GUARD_REASON, remote_model
+            "REMOTE", score, CHARACTER_LEVEL_GUARD_REASON, remote_model, 0.99
         )
 
-    if (
-        is_factual_risk_prompt(prompt)
-        and is_weak_local_model(active_local_model)
-        and not is_local_trivial_whitelisted(prompt)
-    ):
-        return RouterDecision("REMOTE", score, FACTUAL_RISK_GUARD_REASON, remote_model)
+    if is_factual_risk_prompt(prompt) and not is_local_trivial_whitelisted(prompt):
+        return RouterDecision("REMOTE", score, REMOTE_FACTUAL_REASON, remote_model, 0.92)
 
-    if score > threshold:
-        return RouterDecision("REMOTE", score, "complexity>threshold", remote_model)
+    if is_code_generation_prompt(prompt):
+        return RouterDecision("REMOTE", score, REMOTE_CODE_REASON, remote_model, 0.90)
 
-    return RouterDecision("LOCAL", score, "low-complexity-local", active_local_model)
+    if had_prior_local_failure(prompt):
+        return RouterDecision("REMOTE", score, PRIOR_FAILURE_REASON, remote_model, 0.85)
+
+    if len(prompt.strip()) > LONG_PROMPT_CHARS or score > threshold:
+        return RouterDecision("REMOTE", score, REMOTE_LONG_REASON, remote_model, 0.82)
+
+    if is_multi_hop_prompt(prompt):
+        return RouterDecision("REMOTE", score, REMOTE_MULTIHOP_REASON, remote_model, 0.88)
+
+    if would_math_intercept(prompt):
+        return RouterDecision("LOCAL", score, LOCAL_MATH_REASON, "python-eval", 1.0)
+
+    if is_local_capable_prompt(prompt):
+        if local_unavailable:
+            return RouterDecision(
+                "REMOTE", score, LOCAL_UNAVAILABLE_REASON, remote_model, 0.75
+            )
+        if memory_pressure is not None and memory_pressure >= MEMORY_PRESSURE_THRESHOLD:
+            return RouterDecision("REMOTE", score, MEMORY_PRESSURE_REASON, remote_model, 0.78)
+        if is_heavy_local_model(active_local_model) and not allow_heavy_local:
+            return RouterDecision(
+                "REMOTE", score, HEAVY_LOCAL_BYPASS_REASON, remote_model, 0.80
+            )
+        return RouterDecision(
+            "LOCAL", score, LOCAL_GREETING_REASON, active_local_model, 0.90
+        )
+
+    # Router-first default: remote is the generator for everything else.
+    return RouterDecision("REMOTE", score, ROUTER_DEFAULT_REMOTE, remote_model, 0.70)
 
 
-def _log_routing(prompt: str, decision: RouterDecision) -> None:
+def _log_routing(
+    prompt: str,
+    decision: RouterDecision,
+    *,
+    local_healthy: bool,
+) -> None:
     preview = prompt.strip().replace("\n", " ")[:60]
     logger.info(
-        "ROUTING decision route=%s model_id=%s score=%s reason=%s prompt=%r",
+        "ROUTING route=%s model_id=%s reason=%s confidence=%.2f score=%s "
+        "local_healthy=%s memory=%s prompt=%r",
         decision.route,
         decision.model_id,
-        decision.complexity_score,
         decision.reason,
+        decision.confidence_score,
+        decision.complexity_score,
+        local_healthy,
+        get_memory_usage(),
         preview,
     )
 
 
 def _log_executed(result: RouteResult) -> None:
     attempts = result.diagnostics.get("remote_attempts")
+    local_diag = result.diagnostics.get("local", {})
     logger.info(
-        "EXECUTED backend=%s model_id=%s reason=%s fallback=%s retries=%s "
-        "latency_ms=%.1f remote_attempts=%s",
+        "EXECUTED backend=%s model_id=%s reason=%s confidence=%s fallback=%s "
+        "latency_ms=%.1f remote_attempts=%s local_error=%s",
         result.route,
         result.model_used,
         result.routing_reason,
+        result.confidence_score,
         result.fallback_used,
-        result.retries,
         result.latency_ms,
         attempts or [],
+        local_diag.get("error_type") if isinstance(local_diag, dict) else None,
+    )
+
+
+def _log_local_attempt(
+    *,
+    model_name: str,
+    backend: str,
+    route: str,
+    timeout_ms: int,
+    fallback_used: bool,
+    error_type: str | None,
+) -> None:
+    """Structured observability for every local-backend attempt."""
+    logger.info(
+        "LOCAL attempt model_name=%s backend=%s route=%s timeout_ms=%s "
+        "memory_usage=%s fallback_used=%s error_type=%s",
+        model_name,
+        backend,
+        route,
+        timeout_ms,
+        get_memory_usage(),
+        fallback_used,
+        error_type,
+    )
+
+
+def _local_inference_timeout(model_id: str) -> int:
+    """Strict read-timeout (seconds) for a local model, tighter when heavy."""
+    return (
+        LOCAL_HEAVY_INFERENCE_TIMEOUT_SECONDS
+        if is_heavy_local_model(model_id)
+        else LOCAL_INFERENCE_TIMEOUT_SECONDS
     )
 
 
@@ -514,6 +797,49 @@ def safe_math_agent(prompt: str, started: float) -> RouteResult | None:
     return None
 
 
+_HEURISTIC_SPLIT = re.compile(
+    r",\s*(?=(?:what|who|where|when|why|how|tell|capital|population|math:))",
+    re.IGNORECASE,
+)
+
+
+def heuristic_task_split(prompt: str) -> list[str]:
+    """Router-first task split without any local LLM planner call."""
+    cleaned = prompt.strip()
+    if not cleaned:
+        return [cleaned]
+    parts = [part.strip() for part in _HEURISTIC_SPLIT.split(cleaned) if part.strip()]
+    if len(parts) > 1:
+        return parts
+    if cleaned.count(",") >= 2 and len(cleaned) > 40:
+        parts = [part.strip() for part in cleaned.split(",") if part.strip()]
+        if len(parts) > 1:
+            return parts
+    return [cleaned]
+
+
+def adjust_prompt_for_remote(
+    user_text: str,
+    active_local_model: str,
+    *,
+    preserve_exact: bool = False,
+) -> tuple[str, int, str | None, str]:
+    """
+    Middle-layer prompt adjustment before remote inference.
+    Normalizes whitespace; optionally compresses via local distill when safe.
+    """
+    cleaned = re.sub(r"\s+", " ", user_text.strip())
+    if preserve_exact or not cleaned:
+        return cleaned, 0, None, "preserve"
+    if len(cleaned) < 80:
+        return cleaned, 0, None, "normalize"
+    if is_local_unavailable(active_local_model):
+        return cleaned, 0, None, "normalize-no-local"
+    distilled, tokens, err = distill_prompt(cleaned, active_local_model)
+    method = "distill" if distilled != cleaned else "normalize"
+    return distilled, tokens, err, method
+
+
 def distill_prompt(user_text: str, active_local_model: str) -> tuple[str, int, str | None]:
     """
     Compress a prompt via local Ollama before remote inference.
@@ -523,12 +849,19 @@ def distill_prompt(user_text: str, active_local_model: str) -> tuple[str, int, s
     if not cleaned:
         return cleaned, 0, None
 
+    # Skip local distillation entirely if the local backend is unsafe/heavy — it
+    # would freeze exactly like the inference call we are trying to avoid.
+    if is_heavy_local_model(active_local_model) and (
+        is_local_unavailable(active_local_model) or is_memory_constrained()
+    ):
+        return cleaned, 0, "Local backend unsafe for distillation; using original prompt."
+
     try:
         distilled, tokens = _ollama_generate(
             prompt=cleaned,
             model=active_local_model,
             system=DISTILL_SYSTEM_PROMPT,
-            timeout=90,
+            timeout=LOCAL_DECOMP_TIMEOUT_SECONDS,
             options={"temperature": 0.0},
         )
         if not distilled:
@@ -565,26 +898,18 @@ def _parse_question_array(raw: str) -> list[str]:
     return questions
 
 
-def task_dispatcher(prompt: str, active_local_model: str) -> list[str]:
+def task_dispatcher(
+    prompt: str,
+    active_local_model: str = "",
+    *,
+    allow_heavy_local: bool = False,
+) -> list[str]:
     """
-    Use local Ollama to split a prompt into distinct, context-preserving sub-tasks.
-    Falls back to a single-element array on any failure.
+    Router-first decomposition: heuristic split only — never calls a local LLM
+    planner. Keeps the middle layer responsive and remote-oriented.
     """
-    cleaned = prompt.strip()
-    if not cleaned:
-        return [cleaned]
-
-    try:
-        raw, _ = _ollama_generate(
-            prompt=cleaned,
-            model=active_local_model,
-            system=TASK_DECOMPOSITION_SYSTEM,
-            timeout=90,
-            options={"temperature": 0.0, "top_p": 0.1},
-        )
-        return _parse_question_array(raw)
-    except Exception:
-        return [cleaned]
+    _ = active_local_model, allow_heavy_local  # signature kept for callers
+    return heuristic_task_split(prompt)
 
 
 @dataclass
@@ -606,6 +931,8 @@ def plan_request(
     threshold: int,
     active_local_model: str,
     active_remote_model: str,
+    *,
+    allow_heavy_local: bool = False,
 ) -> SwarmPlan:
     """
     Authoritative pre-swarm routing. Runs a GLOBAL route_decision on the FULL
@@ -622,6 +949,9 @@ def plan_request(
         has_image=False,
         active_local_model=active_local_model,
         active_remote_model=active_remote_model,
+        local_unavailable=is_local_unavailable(active_local_model),
+        memory_pressure=get_memory_usage(),
+        allow_heavy_local=allow_heavy_local,
     )
 
     if decision.reason == CHARACTER_LEVEL_GUARD_REASON:
@@ -634,7 +964,7 @@ def plan_request(
         )
 
     # Non-character-level: decomposition may reduce cost without breaking semantics.
-    tasks = task_dispatcher(prompt, active_local_model)
+    tasks = task_dispatcher(prompt, active_local_model, allow_heavy_local=allow_heavy_local)
     return SwarmPlan(
         tasks=tasks,
         global_route=decision.route,
@@ -650,6 +980,8 @@ def route_and_execute(
     active_local_model: str,
     active_remote_model: str,
     image_file: BinaryIO | None = None,
+    *,
+    allow_heavy_local: bool = False,
 ) -> RouteResult:
     """
     Produce an authoritative router decision, then execute the chosen backend.
@@ -659,9 +991,18 @@ def route_and_execute(
     always used. Character-level tasks are hard-routed REMOTE by the pre-router
     override. Local failures may rescue UP to remote, but a REMOTE decision is
     never executed by the local model.
+
+    Heavy-local safety: before committing to a heavy local model the backend is
+    health-gated and memory-checked so the app never blocks on a dead/overloaded
+    local model.
     """
     started = time.perf_counter()
     has_image = image_file is not None
+
+    # Only probe health/memory for routing — router runs before any model call.
+    local_healthy = not has_image and check_local_health(active_local_model)
+    local_unavailable = not has_image and not local_healthy
+    memory_pressure = get_memory_usage() if not has_image else None
 
     decision = route_decision(
         prompt,
@@ -669,8 +1010,11 @@ def route_and_execute(
         has_image=has_image,
         active_local_model=active_local_model,
         active_remote_model=active_remote_model,
+        local_unavailable=local_unavailable,
+        memory_pressure=memory_pressure,
+        allow_heavy_local=allow_heavy_local,
     )
-    _log_routing(prompt, decision)
+    _log_routing(prompt, decision, local_healthy=local_healthy or has_image)
 
     if has_image:
         answer, route, tokens, latency_ms = _route_vision(prompt, api_key, image_file, started)
@@ -688,8 +1032,12 @@ def route_and_execute(
         return result
 
     if decision.route == "REMOTE":
-        # Preserve exact text for tokenization-sensitive tasks (no local distillation).
-        preserve_text = decision.reason == CHARACTER_LEVEL_GUARD_REASON
+        # Skip local distillation for tokenization-sensitive tasks AND whenever the
+        # local backend itself is the reason we are going remote (it would freeze).
+        preserve_text = (
+            decision.reason == CHARACTER_LEVEL_GUARD_REASON
+            or decision.reason in LOCAL_DISTILL_UNSAFE_REASONS
+        )
         result = _route_text_remote(
             prompt,
             api_key,
@@ -700,14 +1048,16 @@ def route_and_execute(
         )
         result.routing_reason = decision.reason
         result.complexity_score = decision.complexity_score
+        result.confidence_score = decision.confidence_score
         _log_executed(result)
         return result
 
     # LOCAL route only: deterministic math eval (0 tokens) is allowed here.
     math_result = safe_math_agent(prompt, started)
     if math_result is not None:
-        math_result.routing_reason = "math:python-eval"
+        math_result.routing_reason = LOCAL_MATH_REASON
         math_result.complexity_score = decision.complexity_score
+        math_result.confidence_score = decision.confidence_score
         _log_executed(math_result)
         return math_result
 
@@ -716,6 +1066,7 @@ def route_and_execute(
     )
     result.routing_reason = decision.reason
     result.complexity_score = decision.complexity_score
+    result.confidence_score = decision.confidence_score
     _log_executed(result)
     return result
 
@@ -726,6 +1077,8 @@ def execute_agent_swarm(
     api_key: str,
     active_local_model: str,
     active_remote_model: str,
+    *,
+    allow_heavy_local: bool = False,
 ) -> RouteResult:
     """Run route_and_execute in parallel for each decomposed sub-question."""
     swarm_started = time.perf_counter()
@@ -742,6 +1095,7 @@ def execute_agent_swarm(
                 api_key,
                 active_local_model,
                 active_remote_model,
+                allow_heavy_local=allow_heavy_local,
             ): index
             for index, task in enumerate(tasks)
         }
@@ -798,6 +1152,8 @@ def process_user_request(
     active_local_model: str,
     active_remote_model: str,
     image_file: BinaryIO | None = None,
+    *,
+    allow_heavy_local: bool = False,
 ) -> RouteResult:
     """Top-level orchestrator: decomposition → swarm or single pipeline."""
     if image_file is not None:
@@ -808,24 +1164,46 @@ def process_user_request(
             active_local_model,
             active_remote_model,
             image_file=image_file,
+            allow_heavy_local=allow_heavy_local,
         )
 
-    plan = plan_request(prompt, threshold, active_local_model, active_remote_model)
+    plan = plan_request(
+        prompt,
+        threshold,
+        active_local_model,
+        active_remote_model,
+        allow_heavy_local=allow_heavy_local,
+    )
 
     # Character-level global override: serve the whole prompt as one remote task.
     if plan.single_remote:
         return route_and_execute(
-            prompt, threshold, api_key, active_local_model, active_remote_model
+            prompt,
+            threshold,
+            api_key,
+            active_local_model,
+            active_remote_model,
+            allow_heavy_local=allow_heavy_local,
         )
 
     if len(plan.tasks) > 1:
         return execute_agent_swarm(
-            plan.tasks, threshold, api_key, active_local_model, active_remote_model
+            plan.tasks,
+            threshold,
+            api_key,
+            active_local_model,
+            active_remote_model,
+            allow_heavy_local=allow_heavy_local,
         )
 
     single_prompt = plan.tasks[0] if plan.tasks else prompt
     return route_and_execute(
-        single_prompt, threshold, api_key, active_local_model, active_remote_model
+        single_prompt,
+        threshold,
+        api_key,
+        active_local_model,
+        active_remote_model,
+        allow_heavy_local=allow_heavy_local,
     )
 
 
@@ -908,46 +1286,103 @@ def _route_text_local(
     started: float,
 ) -> RouteResult:
     """
-    Attempt local Ollama inference; on ANY failure (exception, non-200 status such
-    as a 404 NOT_FOUND when the model isn't pulled, or an empty body) automatically
-    reroute to the remote Fireworks endpoint using `active_remote_model`.
+    Attempt local Ollama inference exactly ONCE, wrapped in a strict timeout and a
+    health gate, then on ANY failure (dead backend, timeout, non-200 status such as
+    a 404 NOT_FOUND, or an empty body) automatically reroute to the remote Fireworks
+    endpoint. A heavy local model is never retried for the same request.
     """
-    payload = {
-        "model": active_local_model,
-        "prompt": prompt,
-        "system": SUB_AGENT_SYSTEM_PROMPT,
-        "stream": False,
-        "options": {"temperature": 0.0, "num_predict": 128},
-    }
-
+    timeout_s = _local_inference_timeout(active_local_model)
+    timeout_ms = timeout_s * 1000
     fallback_reason: str | None = None
-    try:
-        response = requests.post(LOCAL_ENDPOINT, json=payload, timeout=120)
-        if response.status_code != 200:
-            raise requests.HTTPError(
-                f"Ollama returned status {response.status_code}", response=response
-            )
-        data = response.json()
-        answer = data.get("response", "").strip()
-        if not answer:
-            raise ValueError("Ollama returned an empty response")
-        tokens = int(data.get("eval_count", 0))
-        latency_ms = (time.perf_counter() - started) * 1000.0
-        return RouteResult(
-            answer=answer,
-            route="TEXT_LOCAL",
-            tokens=tokens,
-            latency_ms=latency_ms,
-            original_prompt=prompt,
-            model_used=active_local_model,
-        )
+    error_type: str | None = None
 
-    except requests.ConnectionError:
-        fallback_reason = "Ollama is not running on localhost:11434."
-    except requests.Timeout:
-        fallback_reason = "Local Ollama request timed out."
-    except (requests.RequestException, ValueError) as exc:
-        fallback_reason = f"Local model '{active_local_model}' error: {exc}"
+    # Health gate: if the backend is already known-unhealthy, skip the call entirely
+    # so we never block on a dead/overloaded local model.
+    if is_local_unavailable(active_local_model):
+        fallback_reason = "Local backend health check failed."
+        error_type = "health_check_failed"
+    else:
+        payload = {
+            "model": active_local_model,
+            "prompt": prompt,
+            "system": SUB_AGENT_SYSTEM_PROMPT,
+            "stream": False,
+            "options": {"temperature": 0.0, "num_predict": 128},
+        }
+        try:
+            # (connect, read) timeout: read bounds total generation wait for stream=False.
+            response = requests.post(
+                LOCAL_ENDPOINT,
+                json=payload,
+                timeout=(LOCAL_HEALTH_TIMEOUT_SECONDS, timeout_s),
+            )
+            if response.status_code != 200:
+                raise requests.HTTPError(
+                    f"Ollama returned status {response.status_code}", response=response
+                )
+            data = response.json()
+            answer = data.get("response", "").strip()
+            if not answer:
+                raise ValueError("Ollama returned an empty response")
+            tokens = int(data.get("eval_count", 0))
+            latency_ms = (time.perf_counter() - started) * 1000.0
+            _log_local_attempt(
+                model_name=active_local_model,
+                backend="ollama",
+                route="TEXT_LOCAL",
+                timeout_ms=timeout_ms,
+                fallback_used=False,
+                error_type=None,
+            )
+            return RouteResult(
+                answer=answer,
+                route="TEXT_LOCAL",
+                tokens=tokens,
+                latency_ms=latency_ms,
+                original_prompt=prompt,
+                model_used=active_local_model,
+                diagnostics={
+                    "local": {
+                        "model_name": active_local_model,
+                        "timeout_ms": timeout_ms,
+                        "memory_usage": get_memory_usage(),
+                    }
+                },
+            )
+
+        except requests.ConnectionError:
+            fallback_reason = "Ollama is not running on localhost:11434."
+            error_type = "connection_error"
+        except requests.Timeout:
+            # Strict timeout exceeded: stop waiting, mark backend unhealthy, go remote.
+            fallback_reason = (
+                f"Local model '{active_local_model}' exceeded {timeout_s}s timeout."
+            )
+            error_type = "timeout"
+            with _LOCAL_HEALTH_LOCK:
+                _LOCAL_HEALTH_CACHE[active_local_model.strip()] = (
+                    time.time() + LOCAL_HEALTH_TTL_SECONDS,
+                    False,
+                )
+        except (requests.RequestException, ValueError) as exc:
+            fallback_reason = f"Local model '{active_local_model}' error: {exc}"
+            error_type = "request_error"
+
+    logger.warning(
+        "LOCAL fallback model_name=%s error_type=%s reason=%s",
+        active_local_model,
+        error_type,
+        fallback_reason,
+    )
+    mark_prior_local_failure(prompt)
+    _log_local_attempt(
+        model_name=active_local_model,
+        backend="ollama",
+        route="FALLBACK_REMOTE",
+        timeout_ms=timeout_ms,
+        fallback_used=True,
+        error_type=error_type,
+    )
 
     # Local-to-Remote fallback. Never fail the user; bind to the UI-selected model.
     if _has_ui_context():
@@ -964,6 +1399,14 @@ def _route_text_local(
     )
     fallback_result.fallback_used = True
     fallback_result.fallback_reason = fallback_reason
+    fallback_result.diagnostics.setdefault("local", {}).update(
+        {
+            "model_name": active_local_model,
+            "timeout_ms": timeout_ms,
+            "error_type": error_type,
+            "memory_usage": get_memory_usage(),
+        }
+    )
     return fallback_result
 
 
@@ -998,17 +1441,18 @@ def _route_text_remote(
     original_prompt = prompt
     distill_tokens = 0
     distill_error: str | None = None
+    adjust_method = "preserve" if skip_distillation else "normalize"
 
     if skip_distillation:
-        # Local backend is down — distillation (also local) would fail too.
-        distilled = original_prompt
+        distilled = re.sub(r"\s+", " ", original_prompt.strip())
     else:
-        distilled, distill_tokens, distill_error = distill_prompt(prompt, active_local_model)
-        # Distillation fallback — never send empty/None text to the remote API.
+        distilled, distill_tokens, distill_error, adjust_method = adjust_prompt_for_remote(
+            prompt, active_local_model, preserve_exact=False
+        )
         if not distilled or distilled.strip() == "":
             distilled = original_prompt
             if _has_ui_context():
-                st.warning("Distillation returned empty. Falling back to original prompt.")
+                st.warning("Prompt adjustment returned empty. Using original prompt.")
 
     chars_saved = max(0, len(original_prompt) - len(distilled))
 
@@ -1040,7 +1484,10 @@ def _route_text_remote(
             distillation_error=distill_error,
             fallback_used=fallback,
             retries=retries,
-            diagnostics={"remote_attempts": remote_attempts},
+            diagnostics={
+                "remote_attempts": remote_attempts,
+                "prompt_adjustment": adjust_method,
+            },
         )
 
     # A REMOTE decision must be served remotely — we NEVER fall back to local here.
@@ -1180,7 +1627,7 @@ def render_metrics(result: RouteResult) -> None:
         "VISION_REMOTE": "👁️ VISION_REMOTE",
         "TEXT_LOCAL": "💻 TEXT_LOCAL",
         "TEXT_REMOTE": "☁️ TEXT_REMOTE",
-        "FALLBACK_REMOTE": "↩️ FALLBACK_REMOTE",
+        "FALLBACK_REMOTE": "☁️ TEXT_REMOTE (fallback)",
         "AGENT_SWARM": "🐝 AGENT_SWARM",
     }
 
@@ -1199,14 +1646,16 @@ def render_metrics(result: RouteResult) -> None:
 
     with col1:
         st.markdown(f"**Route**  \n{route_label}")
-        if result.route == "FALLBACK_REMOTE" or (
-            result.route == "AGENT_SWARM" and result.fallback_used
-        ):
+        if result.route == "FALLBACK_REMOTE":
+            st.caption(f"↩️ Actual backend: Fireworks `{result.model_used}`")
+        elif result.route == "AGENT_SWARM" and result.fallback_used:
             st.caption("↩️ Fallback to Remote occurred")
-        if result.model_used and result.route != "AGENT_SWARM":
-            st.caption(f"Model: `{result.model_used}`")
+        if result.model_used and result.route not in ("AGENT_SWARM", "FALLBACK_REMOTE"):
+            st.caption(f"Backend: `{result.model_used}`")
         if result.routing_reason and result.route != "AGENT_SWARM":
             st.caption(f"Reason: {result.routing_reason}")
+        if result.confidence_score is not None and result.route != "AGENT_SWARM":
+            st.caption(f"Confidence: {result.confidence_score:.0%}")
 
     with col2:
         if result.route == "AGENT_SWARM" and result.sub_results:
@@ -1357,10 +1806,10 @@ def main() -> None:
         layout="wide",
     )
 
-    st.title("🔀 Hybrid Token-Efficient Routing Agent")
+    st.title("🔀 Router-First Hybrid AI Middleware")
     st.caption(
-        "Advanced middleware: embedded math extraction, complexity-scored routing, "
-        "prompt distillation, and parallel agent cloning with local→remote fallback."
+        "Track 1 middle layer: the router decides LOCAL (trivial/deterministic) vs "
+        "REMOTE (Fireworks) before any model call. Remote is the default generator."
     )
 
     init_session_state()
@@ -1376,9 +1825,12 @@ def main() -> None:
         )
 
         active_local_model = st.text_input(
-            "Local Ollama Model",
+            "Local Utility Model (optional)",
             value=DEFAULT_LOCAL_MODEL,
-            help="Ollama model used for local inference, distillation, and decomposition.",
+            help=(
+                "Lightweight Ollama model for greetings/format only. "
+                "Not the default generator — most prompts route to Fireworks."
+            ),
         ).strip() or DEFAULT_LOCAL_MODEL
 
         remote_choice = st.selectbox(
@@ -1437,17 +1889,32 @@ def main() -> None:
         st.divider()
 
         st.info(
-            "Middleware stack:\n"
-            "1. **Task decomposition** (multi-question → agent swarm)\n"
-            "2. **Embedded math regex** → Python eval\n"
-            "3. **Complexity scorer** → local vs remote\n"
-            "4. **Local failure** → automatic Fireworks fallback\n"
-            "5. **Prompt distillation** → Fireworks (empty-safe)"
+            "Router-first stack:\n"
+            "1. **Authoritative router** → LOCAL only for greetings/math/format\n"
+            "2. **Default generator** → Fireworks remote API\n"
+            "3. **Health gate** → skip dead/slow local backend\n"
+            "4. **Prompt adjustment** → compress before remote\n"
+            "5. **Agent swarm** → heuristic split + parallel remote sub-agents"
         )
 
         if st.button("Clear Chat", use_container_width=True, type="primary"):
             st.session_state.messages = []
             st.rerun()
+
+    # Local-backend health banner (router-first: unhealthy local → all remote).
+    local_healthy = check_local_health(active_local_model)
+    if not local_healthy:
+        st.warning(
+            f"⚠️ Local utility model `{active_local_model}` is **unavailable**. "
+            "All prompts route to Fireworks remote until the backend recovers."
+        )
+    else:
+        mem_usage = get_memory_usage()
+        if mem_usage is not None and mem_usage >= MEMORY_PRESSURE_THRESHOLD:
+            st.warning(
+                f"⚠️ Memory at {mem_usage:.0%} — local utility model bypassed; "
+                "routing to Fireworks remote."
+            )
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
@@ -1482,7 +1949,10 @@ def main() -> None:
                 plan = SwarmPlan([prompt], "REMOTE", "vision:remote", single_remote=False)
             else:
                 plan = plan_request(
-                    prompt, threshold, active_local_model, active_remote_model
+                    prompt,
+                    threshold,
+                    active_local_model,
+                    active_remote_model,
                 )
 
             if plan.single_remote:
@@ -1504,7 +1974,11 @@ def main() -> None:
                         preview = f"{task[:80]}{'…' if len(task) > 80 else ''}"
                         status.write(f"• Sub-agent {index}: {preview}")
                     result = execute_agent_swarm(
-                        plan.tasks, threshold, api_key, active_local_model, active_remote_model
+                        plan.tasks,
+                        threshold,
+                        api_key,
+                        active_local_model,
+                        active_remote_model,
                     )
                     status.update(label="Agent Swarm complete", state="complete")
             else:

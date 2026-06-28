@@ -15,7 +15,7 @@ class LocalConfig:
         default_factory=lambda: os.getenv("LOCAL_LLM_BASE_URL", "http://localhost:11434/v1")
     )
     api_key: str = field(default_factory=lambda: os.getenv("LOCAL_LLM_API_KEY", "ollama"))
-    model: str = field(default_factory=lambda: os.getenv("LOCAL_LLM_MODEL", "llama3.2:3b"))
+    model: str = field(default_factory=lambda: os.getenv("LOCAL_LLM_MODEL", "qwen2.5:0.5b"))
     timeout_seconds: float = field(
         default_factory=lambda: float(os.getenv("LOCAL_LLM_TIMEOUT", "120"))
     )
