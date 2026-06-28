@@ -40,6 +40,7 @@ LOCAL_DECOMP_TIMEOUT_SECONDS = 20    # planner/distill local calls must stay sna
 MEMORY_PRESSURE_THRESHOLD = 0.85     # bypass heavy local above this RAM utilization
 HEAVY_LOCAL_PARAM_BILLIONS = 30      # >= this many params counts as "heavy"
 TRIVIAL_PROMPT_MAX_CHARS = 15        # very short prompts are treated as trivial
+DISTILL_MIN_CHARS = 80               # skip compression for prompts shorter than this
 
 # Routing reasons emitted when a heavy local model is intentionally skipped.
 LOCAL_UNAVAILABLE_REASON = "local-backend-unavailable"
@@ -220,9 +221,22 @@ Task: How to open a jar of jam -> Twist the lid counter-clockwise. Run under war
 Task: Who is Lebron James -> American professional basketball player."""
 
 DISTILL_SYSTEM_PROMPT = (
-    "You are a prompt compressor. Extract ONLY the core question or instruction from "
-    "the user's text. Remove all conversational filler, greetings, or irrelevant context. "
-    "Output nothing but the extracted question."
+    "You are a STRUCTURE-PRESERVING prompt compressor. Rewrite the user's text in "
+    "fewer words WITHOUT changing what is being asked.\n"
+    "RULES:\n"
+    "1. NEVER answer, solve, or explain the prompt. Only rewrite it more tersely.\n"
+    "2. Preserve EVERY task, question, instruction, bullet, and numbered step as a "
+    "SEPARATE line. Never merge multiple tasks into one generic sentence.\n"
+    "3. Keep the SAME number of items as the input. If the input has 3 tasks, output 3.\n"
+    "4. Keep all numbers, names, code, equations, units, and constraints verbatim.\n"
+    "5. Remove only greetings and filler. Output one task per line, no extra prose.\n\n"
+    "EXAMPLE INPUT:\n"
+    "Hi! Could you please first spell 'apple' backwards for me, then also tell me "
+    "what 9 + 10 is, and finally share one fact about France?\n"
+    "EXAMPLE OUTPUT:\n"
+    "spell 'apple' backwards\n"
+    "what is 9 + 10\n"
+    "one fact about France"
 )
 
 # Strict few-shot planner: parent context MUST be appended to every sub-task so that
@@ -1056,6 +1070,78 @@ def _attach_orchestration(
     return result
 
 
+_TASK_BULLET_PATTERN = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+", re.MULTILINE)
+_TASK_SPLIT_PATTERN = re.compile(
+    r",\s*(?=(?:and\s+)?(?:what|who|where|when|why|how|tell|spell|write|list|"
+    r"give|find|name|capital|population|explain|count|reverse|calculate|"
+    r"summarize|describe|compute|then|also|finally|next))",
+    re.IGNORECASE,
+)
+_TASK_ENUM_WORDS = (
+    "first",
+    "second",
+    "third",
+    "fourth",
+    "fifth",
+    "then",
+    "also",
+    "finally",
+    "next",
+    "lastly",
+)
+_TASK_START_KEYWORDS = frozenset(
+    {
+        "what", "who", "where", "when", "why", "how", "tell", "spell", "write",
+        "list", "give", "find", "name", "capital", "population", "explain",
+        "count", "reverse", "calculate", "summarize", "describe", "compute",
+    }
+)
+
+
+def _starts_with_task_keyword(segment: str) -> bool:
+    tokens = segment.strip().split()
+    if not tokens:
+        return False
+    return tokens[0].lower().strip(",.?!:;'\"") in _TASK_START_KEYWORDS
+
+
+def count_tasks(text: str) -> int:
+    """
+    Count distinct tasks/questions/instructions in a prompt.
+
+    Strong structural signals win first (bullets/numbered steps, separate lines,
+    sentence enumerators like "first/second/third", question marks). An inline
+    comma list is only counted as multi-task when it is unambiguous — 3+ items,
+    or every segment begins with an imperative/interrogative keyword — so prose
+    with mid-sentence commas is not mistaken for several tasks. Always >= 1 for
+    non-empty input.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return 0
+
+    strong = [1]
+    strong.append(len(_TASK_BULLET_PATTERN.findall(cleaned)))
+    strong.append(len([line for line in cleaned.splitlines() if line.strip()]))
+    lowered = cleaned.lower()
+    strong.append(sum(1 for w in _TASK_ENUM_WORDS if re.search(rf"\b{w}\b", lowered)))
+    if "?" in cleaned:
+        strong.append(len([seg for seg in cleaned.split("?") if seg.strip()]))
+
+    best = max(strong)
+    if best >= 2:
+        return best
+
+    # Fallback: inline comma list, only when unambiguous.
+    segments = [seg for seg in _TASK_SPLIT_PATTERN.split(cleaned) if seg and seg.strip()]
+    if len(segments) >= 3 or (
+        len(segments) >= 2 and all(_starts_with_task_keyword(seg) for seg in segments)
+    ):
+        return len(segments)
+
+    return 1
+
+
 def adjust_prompt_for_remote(
     user_text: str,
     active_local_model: str,
@@ -1066,25 +1152,34 @@ def adjust_prompt_for_remote(
     Middle-layer prompt adjustment before remote inference.
     Normalizes whitespace; optionally compresses via local distill when safe.
     """
-    cleaned = re.sub(r"\s+", " ", user_text.strip())
+    cleaned = user_text.strip()
+    single_line = re.sub(r"\s+", " ", cleaned)
     if preserve_exact or not cleaned:
-        return cleaned, 0, None, "preserve"
-    if len(cleaned) < 80:
-        return cleaned, 0, None, "normalize"
+        return single_line, 0, None, "preserve"
+    if len(cleaned) < DISTILL_MIN_CHARS:
+        return single_line, 0, None, "normalize"
     if is_local_unavailable(active_local_model):
-        return cleaned, 0, None, "normalize-no-local"
+        return single_line, 0, None, "normalize-no-local"
     distilled, tokens, err = distill_prompt(cleaned, active_local_model)
-    method = "distill" if distilled != cleaned else "normalize"
+    method = "distill" if distilled.strip() != cleaned else "normalize"
     return distilled, tokens, err, method
 
 
 def distill_prompt(user_text: str, active_local_model: str) -> tuple[str, int, str | None]:
     """
-    Compress a prompt via local Ollama before remote inference.
-    Returns (distilled_text, local_tokens_used, error_message).
+    Structure-preserving compression via local Ollama before remote inference.
+
+    The distiller shortens wording but must preserve every task. If the distilled
+    output drops any task (distilled_task_count < original_task_count) or the
+    prompt is already short, the ORIGINAL prompt is returned unchanged.
+    Returns (text, local_tokens_used, error_message).
     """
     cleaned = user_text.strip()
     if not cleaned:
+        return cleaned, 0, None
+
+    # Skip compression for short prompts — nothing meaningful to save.
+    if len(cleaned) < DISTILL_MIN_CHARS:
         return cleaned, 0, None
 
     # Skip local distillation entirely if the local backend is unsafe/heavy — it
@@ -1094,6 +1189,8 @@ def distill_prompt(user_text: str, active_local_model: str) -> tuple[str, int, s
     ):
         return cleaned, 0, "Local backend unsafe for distillation; using original prompt."
 
+    original_task_count = count_tasks(cleaned)
+
     try:
         distilled, tokens = _ollama_generate(
             prompt=cleaned,
@@ -1102,8 +1199,24 @@ def distill_prompt(user_text: str, active_local_model: str) -> tuple[str, int, s
             timeout=LOCAL_DECOMP_TIMEOUT_SECONDS,
             options={"temperature": 0.0},
         )
+        distilled = distilled.strip()
         if not distilled:
             return cleaned, tokens, "Distillation returned empty output; using original prompt."
+
+        # Safety fallback: never let compression drop a task.
+        distilled_task_count = count_tasks(distilled)
+        if distilled_task_count < original_task_count:
+            logger.warning(
+                "Distillation dropped tasks (%s -> %s); using original prompt.",
+                original_task_count,
+                distilled_task_count,
+            )
+            return (
+                cleaned,
+                tokens,
+                f"Distillation dropped tasks ({original_task_count} → "
+                f"{distilled_task_count}); using original prompt.",
+            )
         return distilled, tokens, None
     except requests.ConnectionError:
         return cleaned, 0, "Ollama unavailable for distillation; using original prompt."

@@ -13,6 +13,7 @@ from app import (
     CHARACTER_LEVEL_GUARD_REASON,
     DEFAULT_LOCAL_MODEL,
     DEFAULT_REMOTE_MODEL,
+    DISTILL_MIN_CHARS,
     LOCAL_GREETING_REASON,
     LOCAL_MATH_REASON,
     LOCAL_UNAVAILABLE_REASON,
@@ -23,6 +24,8 @@ from app import (
     build_remote_candidates,
     check_local_health,
     classify_prompt,
+    count_tasks,
+    distill_prompt,
     had_prior_local_failure,
     heuristic_task_split,
     is_beneficial_to_decompose,
@@ -435,6 +438,97 @@ def test_system_prompt_has_no_factual_premise_rejection():
     lowered = SUB_AGENT_SYSTEM_PROMPT.lower()
     assert "not an amazing thing" not in lowered
     assert "amazing thing about france" in lowered
+
+
+# --- Structure-preserving distiller -------------------------------------------------
+
+THREE_TASK_PROMPT = (
+    "First, spell the word 'strawberry' backwards for me. "
+    "Second, what is 128 multiplied by 47? "
+    "Third, give me one historical fact about the Roman Empire."
+)
+
+
+def _patch_ollama(text: str, *, eval_count: int = 20):
+    def handler(url, body):
+        return _FakeResponse(200, payload={"response": text, "eval_count": eval_count})
+
+    return _patch_post(handler)
+
+
+def test_count_tasks_detects_multiple_forms():
+    assert count_tasks("") == 0
+    assert count_tasks("just one thing") == 1
+    assert count_tasks("- task a\n- task b\n- task c") == 3
+    assert count_tasks("1. step one\n2. step two") == 2
+    assert count_tasks("what is X? who is Y? where is Z?") == 3
+    assert count_tasks("spell apple, what is 9+10, tell me a fact") >= 2
+
+
+def test_distill_preserves_three_tasks():
+    _seed_local_health(LOCAL_MODEL, True)
+    distilled_out = (
+        "spell 'strawberry' backwards\nwhat is 128 * 47\none fact about the Roman Empire"
+    )
+    with _patch_ollama(distilled_out):
+        result, tokens, err = distill_prompt(THREE_TASK_PROMPT, LOCAL_MODEL)
+    assert err is None, err
+    assert count_tasks(result) == 3, result
+    assert count_tasks(result) == count_tasks(THREE_TASK_PROMPT)
+    assert result == distilled_out
+
+
+def test_distill_rejects_collapsed_single_sentence():
+    """A generic one-liner that drops tasks must fall back to the original."""
+    _seed_local_health(LOCAL_MODEL, True)
+    collapsed = "Answer the user's questions."
+    with _patch_ollama(collapsed):
+        result, _, err = distill_prompt(THREE_TASK_PROMPT, LOCAL_MODEL)
+    assert result == THREE_TASK_PROMPT, result
+    assert err is not None and "dropped tasks" in err
+
+
+def test_distill_does_not_merge_multi_instructions():
+    _seed_local_health(LOCAL_MODEL, True)
+    merged = "do everything the user asked in one go"
+    with _patch_ollama(merged):
+        result, _, _ = distill_prompt(THREE_TASK_PROMPT, LOCAL_MODEL)
+    assert result == THREE_TASK_PROMPT
+    assert count_tasks(result) == 3
+
+
+def test_distill_skips_short_prompt():
+    _seed_local_health(LOCAL_MODEL, True)
+    short = "what is Cambodia?"
+    assert len(short) < DISTILL_MIN_CHARS
+
+    called = {"n": 0}
+
+    def handler(url, body):
+        called["n"] += 1
+        return _FakeResponse(200, payload={"response": "x", "eval_count": 1})
+
+    with _patch_post(handler):
+        result, tokens, err = distill_prompt(short, LOCAL_MODEL)
+
+    assert result == short
+    assert tokens == 0
+    assert err is None
+    assert called["n"] == 0
+
+
+def test_distill_keeps_shorter_wording_when_tasks_preserved():
+    _seed_local_health(LOCAL_MODEL, True)
+    verbose = (
+        "Could you kindly, when you have a moment, please tell me what the capital "
+        "city of the country of France happens to be in your opinion?"
+    )
+    terse = "capital of France?"
+    with _patch_ollama(terse):
+        result, _, err = distill_prompt(verbose, LOCAL_MODEL)
+    assert err is None
+    assert result == terse
+    assert len(result) < len(verbose)
 
 
 def _run() -> int:
