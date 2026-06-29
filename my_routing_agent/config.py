@@ -1,0 +1,206 @@
+"""Central configuration for the hybrid routing agent with ANGKOR + PHANTOM."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass(frozen=True)
+class LocalConfig:
+    """Ollama / OpenAI-compatible local inference endpoint."""
+
+    base_url: str = field(
+        default_factory=lambda: os.getenv("LOCAL_LLM_BASE_URL", "http://localhost:11434/v1")
+    )
+    api_key: str = field(default_factory=lambda: os.getenv("LOCAL_LLM_API_KEY", "ollama"))
+    model: str = field(default_factory=lambda: os.getenv("LOCAL_LLM_MODEL", "qwen2.5:0.5b"))
+    timeout_seconds: float = field(
+        default_factory=lambda: float(os.getenv("LOCAL_LLM_TIMEOUT", "120"))
+    )
+    max_tokens: int = field(default_factory=lambda: int(os.getenv("LOCAL_LLM_MAX_TOKENS", "512")))
+
+
+@dataclass(frozen=True)
+class RemoteConfig:
+    """Fireworks AI remote inference endpoint."""
+
+    base_url: str = field(
+        default_factory=lambda: os.getenv(
+            "FIREWORKS_BASE_URL", "https://api.fireworks.ai/inference/v1"
+        )
+    )
+    api_key: str = field(default_factory=lambda: os.getenv("FIREWORKS_API_KEY", ""))
+    model: str = field(
+        default_factory=lambda: os.getenv(
+            "FIREWORKS_MODEL", "accounts/fireworks/models/qwen3p7-max"
+        )
+    )
+    timeout_seconds: float = field(
+        default_factory=lambda: float(os.getenv("FIREWORKS_TIMEOUT", "180"))
+    )
+    max_tokens: int = field(default_factory=lambda: int(os.getenv("FIREWORKS_MAX_TOKENS", "1024")))
+
+
+@dataclass(frozen=True)
+class RoutingThresholds:
+    """Strict routing thresholds for Tier-1 heuristics and Tier-2 classification."""
+
+    # Tier 1 — static heuristics
+    max_local_tokens: int = 512
+    max_local_chars: int = 2048
+    simple_query_max_tokens: int = 64
+    bypass_remote_max_tokens: int = 128
+
+    # Tier 2 — semantic complexity scoring (0–100 scale)
+    local_complexity_ceiling: int = 35
+    remote_complexity_floor: int = 55
+    ambiguous_band_low: int = 36
+    ambiguous_band_high: int = 54
+
+    # Vision / multimodal
+    force_remote_on_image: bool = True
+    image_token_penalty: int = 120
+
+
+@dataclass(frozen=True)
+class CompressorConfig:
+    """Image down-sampling and text pruning settings."""
+
+    max_image_dimension: int = 512
+    jpeg_quality: int = 85
+    png_optimize: bool = True
+    strip_system_fluff: bool = True
+    collapse_whitespace: bool = True
+    max_text_chars: int = 8000
+    enable_pos_pruning: bool = field(
+        default_factory=lambda: os.getenv("ENABLE_POS_PRUNING", "true").lower() in {"1", "true", "yes"}
+    )
+    spacy_model: str = field(default_factory=lambda: os.getenv("SPACY_MODEL", "en_core_web_sm"))
+
+
+@dataclass(frozen=True)
+class CacheConfig:
+    """Tier 0 — FAISS semantic cache settings."""
+
+    threshold: float = field(
+        default_factory=lambda: float(os.getenv("CACHE_THRESHOLD", "0.90"))
+    )
+    model_name: str = field(
+        default_factory=lambda: os.getenv("CACHE_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+    )
+    index_path: str = field(
+        default_factory=lambda: os.getenv("CACHE_INDEX_PATH", "faiss_cache.index")
+    )
+    store_path: str = field(
+        default_factory=lambda: os.getenv("CACHE_STORE_PATH", "cache_store.json")
+    )
+
+
+@dataclass(frozen=True)
+class PhantomConfig:
+    """PHANTOM speculative pre-flight executor settings."""
+
+    entropy_check_token: int = field(
+        default_factory=lambda: int(os.getenv("ENTROPY_CHECK_TOKEN", "8"))
+    )
+    entropy_abort_threshold: float = field(
+        default_factory=lambda: float(os.getenv("ENTROPY_ABORT_THRESHOLD", "3.5"))
+    )
+    dead_zone: float = field(
+        default_factory=lambda: float(os.getenv("PHANTOM_DEAD_ZONE", "0.10"))
+    )
+
+
+@dataclass(frozen=True)
+class VerifierConfig:
+    """Tier 3 — Cascade verify settings."""
+
+    coherence_threshold: float = field(
+        default_factory=lambda: float(os.getenv("COHERENCE_THRESHOLD", "0.55"))
+    )
+    escalation_max_rate: float = field(
+        default_factory=lambda: float(os.getenv("ESCALATION_MAX_RATE", "0.15"))
+    )
+
+
+@dataclass(frozen=True)
+class AdaptiveThresholdConfig:
+    """Adaptive routing threshold θ settings."""
+
+    initial_theta: float = field(
+        default_factory=lambda: float(os.getenv("COMPLEXITY_THRESHOLD", "0.65"))
+    )
+    latency_budget_ms: float = field(
+        default_factory=lambda: float(os.getenv("LATENCY_BUDGET_MS", "800"))
+    )
+    min_theta: float = field(
+        default_factory=lambda: float(os.getenv("MIN_THETA", "0.40"))
+    )
+    max_theta: float = field(
+        default_factory=lambda: float(os.getenv("MAX_THETA", "0.85"))
+    )
+
+
+@dataclass(frozen=True)
+class BudgetEnforcerConfig:
+    """PHANTOM C — Dynamic max_tokens budget settings."""
+
+    base_max_tokens: int = field(
+        default_factory=lambda: int(os.getenv("BASE_MAX_TOKENS", "512"))
+    )
+    min_token_budget: int = field(
+        default_factory=lambda: int(os.getenv("MIN_TOKEN_BUDGET", "20"))
+    )
+
+
+@dataclass(frozen=True)
+class TokenizerConfig:
+    """Local token estimation settings."""
+
+    default_encoding: str = "cl100k_base"
+    local_model_encoding: str = "cl100k_base"
+    remote_model_encoding: str = "cl100k_base"
+
+
+@dataclass(frozen=True)
+class AgentConfig:
+    """Top-level agent configuration."""
+
+    local: LocalConfig = field(default_factory=LocalConfig)
+    remote: RemoteConfig = field(default_factory=RemoteConfig)
+    routing: RoutingThresholds = field(default_factory=RoutingThresholds)
+    compressor: CompressorConfig = field(default_factory=CompressorConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
+    phantom: PhantomConfig = field(default_factory=PhantomConfig)
+    verifier: VerifierConfig = field(default_factory=VerifierConfig)
+    adaptive: AdaptiveThresholdConfig = field(default_factory=AdaptiveThresholdConfig)
+    budget: BudgetEnforcerConfig = field(default_factory=BudgetEnforcerConfig)
+    tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
+    enable_fallback: bool = field(
+        default_factory=lambda: os.getenv("ROUTING_ENABLE_FALLBACK", "true").lower()
+        in {"1", "true", "yes"}
+    )
+    system_prompt: str = (
+        "Respond concisely and accurately. For structured tasks, output valid JSON only."
+    )
+
+    def validate(self) -> None:
+        if not self.remote.api_key:
+            pass
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "local_model": self.local.model,
+            "remote_model": self.remote.model,
+            "max_local_tokens": self.routing.max_local_tokens,
+            "enable_fallback": self.enable_fallback,
+        }
+
+
+def load_config() -> AgentConfig:
+    """Load configuration from environment with sane defaults."""
+    config = AgentConfig()
+    config.validate()
+    return config

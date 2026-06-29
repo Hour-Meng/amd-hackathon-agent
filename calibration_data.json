@@ -1,0 +1,17 @@
+[
+  {"query": "What is 2 + 2?", "type": "math", "expected": "4", "complexity": 0.1},
+  {"query": "Capital of France", "type": "factual", "expected": "Paris", "complexity": 0.15},
+  {"query": "Who wrote Hamlet", "type": "factual", "expected": "William Shakespeare", "complexity": 0.15},
+  {"query": "What is the population of Japan", "type": "factual", "expected": "", "complexity": 0.2},
+  {"query": "Write a binary search in Python", "type": "code", "expected": "", "complexity": 0.85},
+  {"query": "Explain quantum entanglement", "type": "explanation", "expected": "", "complexity": 0.7},
+  {"query": "Derive Euler's identity", "type": "analysis", "expected": "", "complexity": 0.8},
+  {"query": "Compare REST and GraphQL", "type": "analysis", "expected": "", "complexity": 0.65},
+  {"query": "Hello", "type": "greeting", "expected": "", "complexity": 0.05},
+  {"query": "Extract email addresses from this text: john@example.com", "type": "extraction", "expected": "", "complexity": 0.35},
+  {"query": "What is the capital of France, who wrote Hamlet, and what is 5 * 13?", "type": "multi", "expected": "", "complexity": 0.45},
+  {"query": "spell apple backward", "type": "character", "expected": "", "complexity": 0.3},
+  {"query": "What is machine learning?", "type": "factual", "expected": "", "complexity": 0.25},
+  {"query": "Write a Python class for a binary tree", "type": "code", "expected": "", "complexity": 0.8},
+  {"query": "Explain the intuition behind gradient descent", "type": "explanation", "expected": "", "complexity": 0.7}
+]
