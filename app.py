@@ -2351,7 +2351,7 @@ def main() -> None:
 
         uploaded_image = st.file_uploader(
             "Upload Image (optional)",
-            type=["jpg", "jpeg", "png"],
+            type=["jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp", "ico"],
             help="When attached, the next message routes through the vision pipeline.",
         )
 
