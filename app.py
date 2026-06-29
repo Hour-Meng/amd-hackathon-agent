@@ -81,7 +81,7 @@ REMOTE_MODEL_OPTIONS = [
 ]
 DEFAULT_REMOTE_MODEL = REMOTE_MODEL_OPTIONS[0]
 # Vision requires a multimodal model regardless of the text-model selection.
-REMOTE_VISION_MODEL = "accounts/fireworks/models/llama-v3p2-11b-vision-instruct"
+REMOTE_VISION_MODEL = "accounts/fireworks/models/qwen3p7-plus"
 
 FIREWORKS_MODEL_PREFIX = "accounts/fireworks/models/"
 
