@@ -172,6 +172,32 @@ def _is_model_unavailable(status_code: int, body: str) -> bool:
         return any(marker in low for marker in MODEL_UNAVAILABLE_MARKERS)
     return False
 
+
+def _extract_remote_answer(data: dict) -> str | None:
+    """Return assistant text from common chat/reasoning response shapes."""
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+
+    first = choices[0]
+    if not isinstance(first, dict):
+        return None
+
+    message = first.get("message")
+    if isinstance(message, dict):
+        for key in ("content", "reasoning_content"):
+            value = message.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    for key in ("text", "content", "reasoning_content"):
+        value = first.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    return None
+
+
 RouteName = Literal[
     "MATH_PYTHON",
     "VISION_REMOTE",
@@ -1903,6 +1929,7 @@ def _route_text_remote(
         }
 
         unavailable = False
+        malformed_response = False
         for attempt in range(max_attempts):
             try:
                 response = requests.post(
@@ -1925,8 +1952,44 @@ def _route_text_remote(
                     unavailable = True
                     break
                 response.raise_for_status()
-                data = response.json()
-                answer = data["choices"][0]["message"]["content"].strip()
+                try:
+                    data = response.json()
+                except ValueError as exc:
+                    last_detail = f"Remote response was not valid JSON: {exc}"
+                    malformed_response = True
+                    logger.warning(
+                        "Remote invalid JSON response for %s: %s",
+                        model_id,
+                        last_detail,
+                    )
+                    remote_attempts.append(
+                        {
+                            "model_id": model_id,
+                            "status": "malformed_response",
+                            "detail": last_detail,
+                        }
+                    )
+                    break
+                answer = _extract_remote_answer(data)
+                if not answer:
+                    last_detail = (
+                        "Remote response missing assistant content: "
+                        f"{str(data)[:400]}"
+                    )
+                    malformed_response = True
+                    logger.warning(
+                        "Remote malformed success response for %s: %s",
+                        model_id,
+                        last_detail,
+                    )
+                    remote_attempts.append(
+                        {
+                            "model_id": model_id,
+                            "status": "malformed_response",
+                            "detail": last_detail,
+                        }
+                    )
+                    break
                 remote_tokens = int(data.get("usage", {}).get("total_tokens", 0))
                 remote_attempts.append({"model_id": model_id, "status": "ok"})
                 return _remote_result(
@@ -1974,6 +2037,9 @@ def _route_text_remote(
             remote_attempts.append(
                 {"model_id": model_id, "status": "unavailable", "detail": last_detail}
             )
+            continue
+
+        if malformed_response:
             continue
 
         # Transient errors exhausted for this model — try the next candidate.

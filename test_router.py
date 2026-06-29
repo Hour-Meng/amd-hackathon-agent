@@ -407,6 +407,74 @@ def test_remote_fallback_on_not_found_uses_next_candidate():
     assert result.answer == "ok"
 
 
+def test_remote_malformed_200_falls_back_to_next_candidate():
+    preferred, second = REMOTE_MODEL, REMOTE_FALLBACK
+
+    def handler(url, body):
+        if body.get("model") == preferred:
+            return _FakeResponse(
+                200,
+                payload={
+                    "choices": [{"finish_reason": "stop"}],
+                    "usage": {"total_tokens": 2},
+                },
+            )
+        return _FakeResponse(
+            200,
+            payload={
+                "choices": [{"message": {"content": "fallback ok"}}],
+                "usage": {"total_tokens": 7},
+            },
+        )
+
+    with _patch_post(handler):
+        result = app._route_text_remote(
+            "spell apple backward",
+            "fw_testkey",
+            LOCAL_MODEL,
+            REMOTE_MODEL,
+            time.perf_counter(),
+            skip_distillation=True,
+        )
+
+    assert result.model_used == second
+    assert result.answer == "fallback ok"
+    attempts = result.diagnostics["remote_attempts"]
+    assert attempts[0]["model_id"] == preferred
+    assert attempts[0]["status"] == "malformed_response"
+    assert attempts[1]["model_id"] == second
+    assert attempts[1]["status"] == "ok"
+
+
+def test_remote_extracts_reasoning_content_when_message_content_missing():
+    def handler(url, body):
+        return _FakeResponse(
+            200,
+            payload={
+                "choices": [
+                    {"message": {"reasoning_content": "reasoning answer"}}
+                ],
+                "usage": {"total_tokens": 5},
+            },
+        )
+
+    with _patch_post(handler):
+        result = app._route_text_remote(
+            "explain why the sky is blue",
+            "fw_testkey",
+            LOCAL_MODEL,
+            REMOTE_MODEL,
+            time.perf_counter(),
+            skip_distillation=True,
+        )
+
+    assert result.model_used == REMOTE_MODEL
+    assert result.answer == "reasoning answer"
+    assert result.diagnostics["remote_attempts"] == [
+        {"model_id": REMOTE_MODEL, "status": "ok"}
+    ]
+
+
 def test_ui_route_label_matches_fallback_backend():
     """FALLBACK_REMOTE result must carry the actual Fireworks model used."""
     _seed_local_health(LOCAL_MODEL, False)
