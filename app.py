@@ -61,6 +61,7 @@ MEMORY_PRESSURE_THRESHOLD = 0.85     # bypass heavy local above this RAM utiliza
 HEAVY_LOCAL_PARAM_BILLIONS = 30      # >= this many params counts as "heavy"
 TRIVIAL_PROMPT_MAX_CHARS = 15        # very short prompts are treated as trivial
 DISTILL_MIN_CHARS = 80               # skip compression for prompts shorter than this
+DEFAULT_COMPLEXITY_THRESHOLD = 30    # complexity score (0-100) above which we escalate
 
 # Routing reasons emitted when a heavy local model is intentionally skipped.
 LOCAL_UNAVAILABLE_REASON = "local-backend-unavailable"
@@ -2618,6 +2619,8 @@ def main() -> None:
                 st.markdown(message["content"])
                 if message.get("image_preview"):
                     st.image(message["image_preview"], width=200)
+
+    threshold = DEFAULT_COMPLEXITY_THRESHOLD
 
     if prompt := st.chat_input("Ask anything, or attach an image in the sidebar..."):
         user_content = prompt
