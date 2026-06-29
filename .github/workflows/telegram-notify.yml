@@ -15,6 +15,7 @@ jobs:
           import os
           import json
           import urllib.request
+          from datetime import datetime, timezone, timedelta
 
           # Load secret credentials from GitHub settings
           token = os.environ.get("TELEGRAM_TOKEN")
@@ -34,10 +35,14 @@ jobs:
           pusher = payload.get("pusher", {}).get("name", "Someone")
           ref = payload.get("ref", "refs/heads/main").split("/")[-1]
 
+          # Commit time in Cambodia time zone (UTC+7), formatted hh:mm:ss
+          cambodia_tz = timezone(timedelta(hours=7))
+          commit_time = datetime.now(cambodia_tz).strftime("%H:%M:%S")
+
           # Format Markdown Message
-          message = f"🚀 **New Push to {repo_name}** [{ref}]\n"
-          message += f"👤 **By:** {pusher}\n\n"
-          message += "📝 **Commits:**\n"
+          message = f"🚀 *New Push to {repo_name} {ref}*\n"
+          message += f"👤 *By:* {pusher}\n\n"
+          message += "📝 *Commits:*\n"
 
           # Grab up to the last 5 commits
           commits = payload.get("commits", [])[:5]
@@ -45,6 +50,9 @@ jobs:
               msg = commit.get("message", "No message").split('\n')[0]
               author = commit.get("author", {}).get("name", "Unknown")
               message += f"• {msg} (- {author})\n"
+
+          # Append the commit time (Cambodia time zone)
+          message += f"\n🕒 *Time:* {commit_time}"
 
           # Send data via direct HTTP request to Telegram API
           url = f"https://api.telegram.org/bot{token}/sendMessage"
