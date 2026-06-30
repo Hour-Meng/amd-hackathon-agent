@@ -2389,6 +2389,7 @@ def render_middleware_telemetry(result: RouteResult) -> None:
                     value=result.original_prompt,
                     height=120,
                     disabled=True,
+                    key = f"original_prompt_{result.message_id}"
                 )
             with col_dist:
                 st.text_area(
@@ -2396,6 +2397,7 @@ def render_middleware_telemetry(result: RouteResult) -> None:
                     value=result.distilled_prompt,
                     height=120,
                     disabled=True,
+                    key = f"distilled_prompt_{result.message_id}"
                 )
             st.metric("Characters saved", result.distillation_chars_saved)
             if result.distillation_error:
@@ -2410,6 +2412,7 @@ def render_middleware_telemetry(result: RouteResult) -> None:
                     value=sub.original_prompt,
                     height=100,
                     disabled=True,
+                    key=f"orig_prompt_{result.message_id}_{index}"
                 )
             with col_dist:
                 st.text_area(
@@ -2417,6 +2420,7 @@ def render_middleware_telemetry(result: RouteResult) -> None:
                     value=sub.distilled_prompt or "",
                     height=100,
                     disabled=True,
+                    key=f"dist_prompt_{result.message_id}_{index}"
                 )
             st.metric(f"Characters saved (sub-agent {index})", sub.distillation_chars_saved)
 
