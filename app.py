@@ -391,12 +391,12 @@ def init_session_state() -> None:
 # ---------------------------------------------------------------------------
 def main() -> None:
     st.set_page_config(
-        page_title="Single-Pass Remote LLM Pipeline",
+        page_title="Hybrid Routing Agent",
         page_icon="⚡",
         layout="wide",
     )
 
-    st.title("⚡ Single-Pass Optimized Remote LLM Pipeline")
+    st.title("🔀 ANGKOR Router + PHANTOM Layer")
     st.caption("Compress → Cache → Single LLM Call → Structured Output")
 
     init_session_state()
