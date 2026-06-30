@@ -1,4 +1,4 @@
-"""Down-sample images and prune text before routing and inference."""
+"""Down-sample images, prune text, and aggressively compress prompts before inference."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from PIL import Image
 from my_routing_agent.config import CompressorConfig
 from my_routing_agent.utils.tokenizer import TokenCounter
 
-
 SYSTEM_FLUFF_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^#{1,6}\s+", re.MULTILINE),
     re.compile(r"^\s*[-*]\s+", re.MULTILINE),
@@ -23,9 +22,26 @@ SYSTEM_FLUFF_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"```[\s\S]*?```"),
     re.compile(r"<system>[\s\S]*?</system>", re.IGNORECASE),
 )
-
 WHITESPACE_PATTERN = re.compile(r"[ \t]+")
 MULTI_NEWLINE_PATTERN = re.compile(r"\n{3,}")
+
+# Aggressive compression patterns for token efficiency
+FILLER_WORDS = re.compile(
+    r"\b(?:"
+    r"please|kindly|note that|for your information|fyi|"
+    r"just|simply|basically|actually|honestly|literally|"
+    r"essentially|technically|additionally|furthermore|moreover|"
+    r"consequently|nevertheless|nonetheless|regardless|"
+    r"importantly|significantly|notably|particularly|"
+    r"i was wondering if you could|i would like to know|"
+    r"i would like|could you please|can you please|could you tell me|"
+    r"i need you to|i want you to|your task is to|you are to|"
+    r"could you|can you|could i ask"
+    r")\b",
+    re.IGNORECASE,
+)
+REPETITIVE_WHITESPACE = re.compile(r"[ \t]{2,}")
+EXCESS_NEWLINES = re.compile(r"\n{3,}")
 
 
 @dataclass
@@ -71,8 +87,9 @@ class InputCompressor:
         pre_tokens = self._tokens.count(raw_text)
 
         cleaned_text = self._prune_text(raw_text)
-        if self._config.max_text_chars and len(cleaned_text) > self._config.max_text_chars:
-            cleaned_text = cleaned_text[: self._config.max_text_chars].rstrip() + "…"
+        compressed_text = self._aggressive_compress(cleaned_text)
+        if self._config.max_text_chars and len(compressed_text) > self._config.max_text_chars:
+            compressed_text = compressed_text[: self._config.max_text_chars].rstrip() + "…"
 
         images: list[str] = []
         image_meta: list[dict[str, Any]] = []
@@ -87,10 +104,10 @@ class InputCompressor:
             images.append(encoded)
             image_meta.append(meta)
 
-        post_tokens = self._tokens.count(cleaned_text) + len(images) * 85
+        post_tokens = self._tokens.count(compressed_text) + len(images) * 85
 
         return ProcessedInput(
-            text=cleaned_text,
+            text=compressed_text,
             images=images,
             metadata={"images": image_meta},
             pre_optimization_tokens=pre_tokens,
@@ -105,6 +122,13 @@ class InputCompressor:
         if self._config.collapse_whitespace:
             result = WHITESPACE_PATTERN.sub(" ", result)
             result = MULTI_NEWLINE_PATTERN.sub("\n\n", result)
+        return result.strip()
+
+    def _aggressive_compress(self, text: str) -> str:
+        """Second-pass aggressive compression for maximum token savings."""
+        result = FILLER_WORDS.sub("", text)
+        result = REPETITIVE_WHITESPACE.sub(" ", result)
+        result = EXCESS_NEWLINES.sub("\n\n", result)
         return result.strip()
 
     def _compress_image_file(self, path: Path) -> tuple[str, dict[str, Any]]:
