@@ -347,6 +347,12 @@ class RouteResult:
     decomposition_used: bool = False
     num_agents: int = 1
     escalation_reason: str | None = None
+    message_id: str = ""
+
+
+def _render_key(prefix: str, result: RouteResult, suffix: str = "") -> str:
+    """Unique Streamlit key for telemetry widgets."""
+    return f"{prefix}_{id(result)}_{suffix}".rstrip("_")
 
 
 def _has_ui_context() -> bool:
@@ -2389,7 +2395,7 @@ def render_middleware_telemetry(result: RouteResult) -> None:
                     value=result.original_prompt,
                     height=120,
                     disabled=True,
-                    key = f"original_prompt_{result.message_id}"
+                    key=_render_key("original_prompt", result)
                 )
             with col_dist:
                 st.text_area(
@@ -2397,7 +2403,7 @@ def render_middleware_telemetry(result: RouteResult) -> None:
                     value=result.distilled_prompt,
                     height=120,
                     disabled=True,
-                    key = f"distilled_prompt_{result.message_id}"
+                    key=_render_key("distilled_prompt", result)
                 )
             st.metric("Characters saved", result.distillation_chars_saved)
             if result.distillation_error:
@@ -2412,7 +2418,7 @@ def render_middleware_telemetry(result: RouteResult) -> None:
                     value=sub.original_prompt,
                     height=100,
                     disabled=True,
-                    key=f"orig_prompt_{result.message_id}_{index}"
+                    key=_render_key("orig_prompt", result, str(index))
                 )
             with col_dist:
                 st.text_area(
@@ -2420,7 +2426,7 @@ def render_middleware_telemetry(result: RouteResult) -> None:
                     value=sub.distilled_prompt or "",
                     height=100,
                     disabled=True,
-                    key=f"dist_prompt_{result.message_id}_{index}"
+                    key=_render_key("dist_prompt", result, str(index))
                 )
             st.metric(f"Characters saved (sub-agent {index})", sub.distillation_chars_saved)
 
