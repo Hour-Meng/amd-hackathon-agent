@@ -1,0 +1,20 @@
+{
+  "token_index": 8,
+  "abort_threshold": 0.25,
+  "production_rule": "abort if ensemble_score < 0.25 at token 8, else continue",
+  "weights": {
+    "shannon_entropy": -4.738451847518845,
+    "top1_probability": 0.8024477040151781,
+    "top3_probability_sum": 0.6841599448070007,
+    "max_repeat_streak": -0.19147126367963585,
+    "intercept": 12.540807138718394
+  },
+  "per_signal_roc_auc": {
+    "shannon_entropy": 0.0,
+    "top1_probability": 1.0,
+    "top3_probability_sum": 1.0,
+    "max_repeat_streak": 0.451
+  },
+  "ensemble_roc_auc": 1.0,
+  "samples": 4000
+}

@@ -377,19 +377,25 @@ class SklearnRouter:
         proba = self._model.predict_proba(features)[0]
         return float(proba[1])
 
-    def zone(self, complexity: float) -> PhantomZone:
-        dead_zone = 0.10
+    def zone(self, complexity: float, *, dead_zone: float | None = None) -> PhantomZone:
+        dz = dead_zone if dead_zone is not None else 0.10
         theta = self._theta.theta
-        if complexity < (theta - dead_zone):
+        if complexity < (theta - dz):
             return PhantomZone.CLEAR_LOCAL
-        if complexity > (theta + dead_zone):
+        if complexity > (theta + dz):
             return PhantomZone.CLEAR_REMOTE
         return PhantomZone.PHANTOM_RACE
 
-    def route(self, text: str, entropy_score: float | None = None) -> AngkorRoutingResult:
+    def route(
+        self,
+        text: str,
+        entropy_score: float | None = None,
+        *,
+        dead_zone: float | None = None,
+    ) -> AngkorRoutingResult:
         tokens = len(text.split())
         complexity = self.score(text, entropy_score)
-        z = self.zone(complexity)
+        z = self.zone(complexity, dead_zone=dead_zone)
 
         if z == PhantomZone.CLEAR_LOCAL:
             return AngkorRoutingResult(

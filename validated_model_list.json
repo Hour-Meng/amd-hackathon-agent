@@ -1,0 +1,9 @@
+{
+  "validated": [
+    "accounts/fireworks/models/qwen3p7-plus"
+  ],
+  "removed": [
+    "accounts/fireworks/models/minimax-m3"
+  ],
+  "accessible_count": 1
+}
