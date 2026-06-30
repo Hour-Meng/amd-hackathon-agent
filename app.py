@@ -31,6 +31,7 @@ REMOTE_MODEL_CANDIDATES = [
     "accounts/fireworks/models/minimax-m3",
     "accounts/fireworks/models/qwen3p7-plus",
 ]
+DEFAULT_LOCAL_MODEL = "qwen2.5:0.5b"
 DEFAULT_REMOTE_MODEL = REMOTE_MODEL_CANDIDATES[0]
 FIREWORKS_MODEL_PREFIX = "accounts/fireworks/models/"
 KNOWN_DEPLOYED_REMOTE_MODELS = frozenset({
@@ -403,19 +404,26 @@ def main() -> None:
     init_cache()
 
     with st.sidebar:
-        st.header("⚙️ Configuration")
+        st.header("⚙️ ANGKOR + PHANTOM Configuration")
 
         api_key = st.text_input(
             "Fireworks API Key",
             type="password",
             placeholder="fw_...",
-            help="Required for remote inference.",
+            help="Required for remote, vision, and fallback routes.",
         )
 
+        active_local_model = st.text_input(
+            "Local Utility Model (Ollama)",
+            value=DEFAULT_LOCAL_MODEL,
+            help="Lightweight Ollama model for local inference & PHANTOM early abort.",
+        ).strip() or DEFAULT_LOCAL_MODEL
+
         remote_choice = st.selectbox(
-            "Remote Model",
+            "Remote Fireworks Model",
             options=REMOTE_MODEL_OPTIONS,
             index=0,
+            help="Fireworks model for remote inference & PHANTOM race.",
         )
         if remote_choice == CUSTOM_MODEL_SENTINEL:
             active_remote_model = st.text_input(
@@ -427,26 +435,67 @@ def main() -> None:
 
         if not active_remote_model:
             active_remote_model = DEFAULT_REMOTE_MODEL
+            st.warning("Empty custom model ID — using default remote model.")
+
         active_remote_model = normalize_model_id(active_remote_model) or DEFAULT_REMOTE_MODEL
-        st.caption(f"Active model: `{active_remote_model}`")
+        st.caption(f"Active remote model: `{active_remote_model}`")
+
+        candidate_chain = build_remote_candidates(active_remote_model)
+        if not is_known_deployed_model(active_remote_model):
+            st.warning(
+                f"⚠️ `{active_remote_model}` is not in the known-deployed registry. "
+                "It will only be tried as a last resort.\n\n"
+                f"**Fallback order:** {', '.join(f'`{m}`' for m in candidate_chain)}"
+            )
+        else:
+            st.caption("Fallback order: " + " → ".join(f"`{m}`" for m in candidate_chain))
 
         st.divider()
+
+        # -- ANGKOR Controls -------------------------------------------------
+        st.subheader("🎯 ANGKOR Router")
+        cache_threshold = st.slider(
+            "Cache Similarity Floor (Tier 0)",
+            min_value=0.70, max_value=0.99, value=0.90, step=0.01,
+            help="Cosine similarity threshold for FAISS cache hit.",
+        )
+        if _CACHE:
+            _CACHE._config = _CACHE._config.__class__(
+                threshold=cache_threshold,
+                model_name=_CACHE._config.model_name,
+                index_path=_CACHE._config.index_path,
+                store_path=_CACHE._config.store_path,
+            )
+
+        phantom_dead_zone = st.slider(
+            "PHANTOM Dead Zone (±θ)",
+            min_value=0.02, max_value=0.25, value=0.10, step=0.01,
+            help="Band around θ that triggers PHANTOM speculative race.",
+        )
+
+        entropy_threshold = st.slider(
+            "Entropy Abort Threshold",
+            min_value=2.0, max_value=5.0, value=3.5, step=0.1,
+            help="H(Y) above this → abort local generation (PHANTOM A).",
+        )
+
+        st.metric("Adaptive θ", f"{0.65:.3f}", delta=None)
 
         uploaded_image = st.file_uploader(
             "Upload Image (optional)",
             type=["jpg", "jpeg", "png", "webp", "bmp", "tiff", "tif", "gif"],
+            help="When attached, the next message routes through the vision pipeline.",
         )
         if uploaded_image is not None:
             st.image(uploaded_image, caption="Attached image preview", use_container_width=True)
 
         st.divider()
+
         st.info(
-            "**Pipeline:**\n"
-            "1. Compress prompt (remove filler)\n"
-            "2. Check semantic cache\n"
-            "3. Single remote LLM call\n"
-            "4. Structured output (Summary / Key Points / Final Answer)\n"
-            "5. Store in cache"
+            "**ANGKOR + PHANTOM Pipeline:**\n"
+            "T0: FAISS Cache → T1: Compress → T2: 3-Zone Router → "
+            "PHANTOM: Entropy Abort + Speculative Race + Budget Enforcement → "
+            "T3: Cascade Verify"
         )
 
         if _CACHE:
