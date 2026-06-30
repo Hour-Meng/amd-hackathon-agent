@@ -87,6 +87,12 @@ class CacheConfig:
     threshold: float = field(
         default_factory=lambda: float(os.getenv("CACHE_THRESHOLD", "0.90"))
     )
+    candidate_range_low: float = field(
+        default_factory=lambda: float(os.getenv("CACHE_CANDIDATE_RANGE_LOW", "0.88"))
+    )
+    candidate_range_high: float = field(
+        default_factory=lambda: float(os.getenv("CACHE_CANDIDATE_RANGE_HIGH", "0.92"))
+    )
     model_name: str = field(
         default_factory=lambda: os.getenv("CACHE_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
     )
@@ -108,8 +114,18 @@ class PhantomConfig:
     entropy_abort_threshold: float = field(
         default_factory=lambda: float(os.getenv("ENTROPY_ABORT_THRESHOLD", "3.5"))
     )
+    ensemble_abort_threshold: float = field(
+        default_factory=lambda: float(os.getenv("ENSEMBLE_ABORT_THRESHOLD", "0.25"))
+    )
     dead_zone: float = field(
         default_factory=lambda: float(os.getenv("PHANTOM_DEAD_ZONE", "0.10"))
+    )
+    per_model_thresholds: dict[str, float] = field(
+        default_factory=lambda: {
+            "qwen2.5:0.5b": float(os.getenv("PHANTOM_THRESHOLD_QWEN_0_5B", "0.25")),
+            "qwen2.5:32b": float(os.getenv("PHANTOM_THRESHOLD_QWEN_32B", "0.30")),
+            "default": float(os.getenv("PHANTOM_THRESHOLD_DEFAULT", "0.25")),
+        }
     )
 
 

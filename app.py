@@ -10,6 +10,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import BinaryIO, Literal
 
 import threading
@@ -19,7 +20,10 @@ import streamlit as st
 from PIL import Image
 
 from my_routing_agent.cache.semantic_cache import SemanticCache
+from my_routing_agent.config import CacheConfig, PhantomConfig, load_config
 from my_routing_agent.middleware.entropy import compute_shannon_entropy, normalize_entropy
+from my_routing_agent.phantom.deadzone_runner import DeadZoneRunner
+from my_routing_agent.remote.validate_models import load_validated_models, validate_remote_models
 from my_routing_agent.routers.engine import (
     AdaptiveThreshold,
     PhantomZone,
@@ -32,13 +36,17 @@ from my_routing_agent.phantom.speculative import SpeculativeRunner
 from my_routing_agent.verifier.cascade import CascadeVerifier
 
 logger = logging.getLogger("hybrid_router")
+ROOT_DIR = Path(__file__).resolve().parent
 
 # ANGKOR + PHANTOM module-level singletons (lazy-init in main)
 _ANGKOR_CACHE: SemanticCache | None = None
 _ANGKOR_SKLEARN_ROUTER: SklearnRouter | None = None
 _ANGKOR_ADAPTIVE_THETA: AdaptiveThreshold | None = None
 _ANGKOR_PHANTOM_RUNNER: SpeculativeRunner | None = None
+_ANGKOR_DEADZONE_RUNNER: DeadZoneRunner | None = None
 _ANGKOR_VERIFIER: CascadeVerifier | None = None
+_VALIDATED_REMOTE_MODELS: list[str] = []
+_PHANTOM_ENSEMBLE: dict = {}
 if not logger.handlers:
     logging.basicConfig(
         level=logging.INFO,
@@ -165,12 +173,20 @@ def build_remote_candidates(selected_model: str) -> list[str]:
     - The user-selected model is tried FIRST only when it is known-deployed.
     - Otherwise the validated candidates lead, and the unknown selection is kept
       as a last-resort attempt (so we still try it, but never first).
+    - When validated_model_list.json exists, inaccessible IDs are removed.
     """
     selected = normalize_model_id(selected_model)
     ordered: list[str] = []
+    validated = _VALIDATED_REMOTE_MODELS or load_validated_models(ROOT_DIR / "validated_model_list.json")
+    candidate_pool = validated if validated else list(REMOTE_MODEL_CANDIDATES)
 
-    if selected and is_known_deployed_model(selected):
+    if selected and (not validated or selected in validated) and is_known_deployed_model(selected):
         ordered.append(selected)
+
+    for cand in candidate_pool:
+        normalized = normalize_model_id(cand)
+        if normalized and normalized not in ordered and is_known_deployed_model(normalized):
+            ordered.append(normalized)
 
     for cand in REMOTE_MODEL_CANDIDATES:
         normalized = normalize_model_id(cand)
@@ -182,6 +198,51 @@ def build_remote_candidates(selected_model: str) -> list[str]:
         ordered.append(selected)
 
     return ordered
+
+
+def _load_calibration_artifacts() -> CacheConfig:
+    """Load cache calibration report if present; otherwise env defaults."""
+    cfg = load_config().cache
+    report_path = ROOT_DIR / "calibrate-cache.json"
+    if not report_path.exists():
+        return cfg
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        threshold = float(report.get("recommended_threshold", cfg.threshold))
+        lo, hi = report.get("candidate_range", [threshold - 0.02, threshold + 0.02])
+        return CacheConfig(
+            threshold=threshold,
+            candidate_range_low=float(lo),
+            candidate_range_high=float(hi),
+            model_name=cfg.model_name,
+            index_path=cfg.index_path,
+            store_path=cfg.store_path,
+        )
+    except Exception as exc:
+        logger.warning("Could not load calibrate-cache.json: %s", exc)
+        return cfg
+
+
+def _load_phantom_ensemble() -> dict:
+    path = ROOT_DIR / "phantom_ensemble.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Could not load phantom_ensemble.json: %s", exc)
+        return {}
+
+
+def _startup_validate_remote_models(api_key: str) -> list[str]:
+    global _VALIDATED_REMOTE_MODELS
+    payload = validate_remote_models(
+        REMOTE_MODEL_CANDIDATES,
+        api_key,
+        output_path=ROOT_DIR / "validated_model_list.json",
+    )
+    _VALIDATED_REMOTE_MODELS = list(payload.get("validated", []))
+    return _VALIDATED_REMOTE_MODELS
 
 
 def _is_model_unavailable(status_code: int, body: str) -> bool:
@@ -1594,38 +1655,62 @@ def _angkor_phantom_execute(
     active_remote_model: str,
     started: float,
 ) -> RouteResult | None:
-    """Try ANGKOR 3-zone + PHANTOM race. Returns None if not ready or not PHANTOM zone."""
-    global _ANGKOR_SKLEARN_ROUTER, _ANGKOR_PHANTOM_RUNNER, _ANGKOR_ADAPTIVE_THETA
+    """Try ANGKOR 3-zone + PHANTOM dead-zone race. Returns None if not ready or not PHANTOM zone."""
+    global _ANGKOR_SKLEARN_ROUTER, _ANGKOR_DEADZONE_RUNNER, _ANGKOR_ADAPTIVE_THETA
     router = _ANGKOR_SKLEARN_ROUTER
     if router is None or not router.is_ready:
         return None
+    phantom_cfg = load_config().phantom
     entropy_score = compute_shannon_entropy(prompt)
-    angkor_result = router.route(prompt, entropy_score=entropy_score)
+    angkor_result = router.route(
+        prompt,
+        entropy_score=entropy_score,
+        dead_zone=phantom_cfg.dead_zone,
+    )
     z = angkor_result.zone
     if z == PhantomZone.PHANTOM_RACE:
-        runner = _ANGKOR_PHANTOM_RUNNER
+        runner = _ANGKOR_DEADZONE_RUNNER
         if runner is None:
             return None
         fe = FeatureExtractor()
         features = fe.extract(prompt, entropy_score=entropy_score)
         L_out_norm = float(features[4])
         confidence = 1.0 - abs(angkor_result.complexity_score - router.theta) / 0.5
+        validated = build_remote_candidates(active_remote_model)
 
-        def _remote_fn(text: str, **kw: object) -> str | None:
-            max_tok = int(kw.get("max_tokens", 128))
+        def _remote_fn(
+            text: str,
+            *,
+            model_id: str,
+            max_tokens: int,
+            cancel_event: threading.Event,
+            token_counter: object,
+        ) -> tuple[str | None, str, int]:
+            if cancel_event.is_set():
+                return None, "cancelled", 0
             result = _route_text_remote(
-                text, api_key, active_local_model, active_remote_model,
-                started, fallback=False, skip_distillation=False,
+                text,
+                api_key,
+                active_local_model,
+                model_id,
+                started,
+                fallback=False,
+                skip_distillation=True,
             )
-            return result.answer if result and result.answer else None
+            tokens = int(getattr(result, "tokens", 0) or max_tokens // 4)
+            if hasattr(token_counter, "tokens_emitted"):
+                token_counter.tokens_emitted = max(token_counter.tokens_emitted, tokens)
+            if result.answer and result.answer.startswith("⚠️"):
+                return None, result.answer, tokens
+            return result.answer, "ok", tokens
 
-        source_name = "local" if angkor_result.destination == "local" else "remote"
-        answer_text, winner, telemetry = runner.phantom_race(
+        answer_text, winner, telemetry = runner.run_race(
             prompt=prompt,
+            local_model=active_local_model,
+            validated_remote_models=validated,
+            remote_call=_remote_fn,
             L_out_norm=L_out_norm,
             confidence=confidence,
-            local_model=active_local_model,
-            remote_call=_remote_fn,
         )
         route: RouteName = "PHANTOM_RACE"
         latency_ms = (time.perf_counter() - started) * 1000.0
@@ -2479,10 +2564,14 @@ def main() -> None:
 
     # -- ANGKOR + PHANTOM lazy initialization --------------------------------
     global _ANGKOR_CACHE, _ANGKOR_SKLEARN_ROUTER, _ANGKOR_ADAPTIVE_THETA
-    global _ANGKOR_PHANTOM_RUNNER, _ANGKOR_VERIFIER
+    global _ANGKOR_PHANTOM_RUNNER, _ANGKOR_DEADZONE_RUNNER, _ANGKOR_VERIFIER
+    global _PHANTOM_ENSEMBLE
+
+    cache_cfg = _load_calibration_artifacts()
+    _PHANTOM_ENSEMBLE = _load_phantom_ensemble()
 
     if _ANGKOR_CACHE is None:
-        cache = SemanticCache()
+        cache = SemanticCache(config=cache_cfg)
         if cache.initialize():
             _ANGKOR_CACHE = cache
 
@@ -2498,6 +2587,9 @@ def main() -> None:
 
     if _ANGKOR_PHANTOM_RUNNER is None:
         _ANGKOR_PHANTOM_RUNNER = SpeculativeRunner()
+
+    if _ANGKOR_DEADZONE_RUNNER is None:
+        _ANGKOR_DEADZONE_RUNNER = DeadZoneRunner(ensemble_report=_PHANTOM_ENSEMBLE)
 
     if _ANGKOR_VERIFIER is None:
         _ANGKOR_VERIFIER = CascadeVerifier()
@@ -2538,6 +2630,12 @@ def main() -> None:
 
         active_remote_model = normalize_model_id(active_remote_model) or DEFAULT_REMOTE_MODEL
         st.caption(f"Active remote model: `{active_remote_model}`")
+
+        if api_key and not st.session_state.get("remote_models_validated"):
+            validated = _startup_validate_remote_models(api_key.strip())
+            st.session_state["remote_models_validated"] = True
+            if validated:
+                st.caption(f"Validated remote models: {len(validated)}")
 
         candidate_chain = build_remote_candidates(active_remote_model)
         if not is_known_deployed_model(active_remote_model):

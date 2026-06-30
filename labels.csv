@@ -1,0 +1,201 @@
+query_a,query_b,identical_intent
+What is 2 + 2?,what is two plus two,1
+What is 2 + 2?,2+2 equals?,1
+What is 2 + 2?,calculate 2 plus 2,1
+Capital of France,what is the capital of france,1
+Capital of France,france capital city,1
+Capital of France,name france's capital,1
+Who wrote Hamlet,hamlet author,1
+Who wrote Hamlet,who is the author of hamlet,1
+Who wrote Hamlet,who penned hamlet,1
+Hello,hi there,1
+Hello,hey,1
+Hello,good morning,1
+What is machine learning?,define machine learning,1
+What is machine learning?,explain ml briefly,1
+What is machine learning?,what does machine learning mean,1
+Write a binary search in Python,implement binary search python,1
+Write a binary search in Python,python binary search function,1
+Write a binary search in Python,code binary search in py,1
+Explain quantum entanglement,what is quantum entanglement,1
+Explain quantum entanglement,describe entanglement in quantum physics,1
+Explain quantum entanglement,quantum entanglement explained,1
+spell apple backward,reverse the word apple,1
+spell apple backward,apple spelled backwards,1
+spell apple backward,backward spelling of apple,1
+What is the population of Japan,japan population count,1
+What is the population of Japan,how many people live in japan,1
+What is the population of Japan,population figure for japan,1
+Compare REST and GraphQL,rest vs graphql differences,1
+Compare REST and GraphQL,graphql compared to rest api,1
+Compare REST and GraphQL,contrast rest and graphql,1
+What is 2 + 2?,Capital of France,0
+Capital of France,What is 2 + 2?,0
+Hello,Write a binary search in Python,0
+Write a binary search in Python,Hello,0
+Who wrote Hamlet,What is machine learning?,0
+What is machine learning?,Who wrote Hamlet,0
+spell apple backward,Explain quantum entanglement,0
+Explain quantum entanglement,spell apple backward,0
+Capital of France,Derive Euler's identity,0
+Derive Euler's identity,Capital of France,0
+What is the population of Japan,Hello,0
+Hello,What is the population of Japan,0
+Compare REST and GraphQL,What is 2 + 2?,0
+What is 2 + 2?,Compare REST and GraphQL,0
+Extract email addresses from this text: john@example.com,Who wrote Hamlet,0
+Who wrote Hamlet,Extract email addresses from this text: john@example.com,0
+What is machine learning?,Capital of France,0
+Capital of France,What is machine learning?,0
+Write a Python class for a binary tree,Hello,0
+Hello,Write a Python class for a binary tree,0
+tell me the capital of france,what is france's capital,1
+how are you today,how are you doing,1
+thanks a lot,thank you,1
+where is cambodia,location of cambodia,1
+what is 9 plus 10,9+10?,1
+reverse banana,spell banana backwards,1
+summarize this article,give me a short summary,1
+list prime numbers under 20,primes below twenty,1
+what is the weather,implement quicksort in rust,0
+who is lebron james,count letters in strawberry,0
+translate hello to khmer,what is photosynthesis,0
+build a rest api,what is the capital of cambodia,0
+fix this bug in my code,tell me a joke,0
+describe the eiffel tower,write regex for emails,0
+"What is the capital of France, who wrote Hamlet, and what is 5 * 13?","what is the capital of france, who wrote hamlet, and what is 5 * 13?",1
+Write a binary search in Python,write a binary search in python,1
+spell apple backward,Capital of France,0
+Explain the intuition behind gradient descent,explain the intuition behind gradient descent,1
+Derive Euler's identity,derive euler's identity,1
+What is the population of Japan,What is the population of Japan,1
+Hello,hello,1
+What is the population of Japan,spell apple backward,0
+Hello,hello,1
+Extract email addresses from this text: john@example.com,Write a binary search in Python,0
+What is 2 + 2?,What is machine learning?,0
+spell apple backward,Derive Euler's identity,0
+Who wrote Hamlet,What is the population of Japan,0
+Explain quantum entanglement,explain quantum entanglement,1
+Capital of France,Explain quantum entanglement,0
+Extract email addresses from this text: john@example.com,Write a binary search in Python,0
+spell apple backward,Compare REST and GraphQL,0
+Explain the intuition behind gradient descent,explain the intuition behind gradient descent,1
+Write a binary search in Python,Write a Python class for a binary tree,0
+Explain the intuition behind gradient descent,Write a Python class for a binary tree,0
+What is the population of Japan,what is the population of japan,1
+"What is the capital of France, who wrote Hamlet, and what is 5 * 13?",What is the population of Japan,0
+Capital of France,capital of france,1
+Capital of France,capital of france,1
+"What is the capital of France, who wrote Hamlet, and what is 5 * 13?",Write a Python class for a binary tree,0
+Explain quantum entanglement,Explain quantum entanglement,1
+What is the population of Japan,what is the population of japan,1
+Explain the intuition behind gradient descent,"What is the capital of France, who wrote Hamlet, and what is 5 * 13?",0
+Extract email addresses from this text: john@example.com,extract email addresses from this text: john@example.com,1
+spell apple backward,spell apple backward,1
+Derive Euler's identity,Write a binary search in Python,0
+"What is the capital of France, who wrote Hamlet, and what is 5 * 13?",spell apple backward,0
+"What is the capital of France, who wrote Hamlet, and what is 5 * 13?",Explain quantum entanglement,0
+What is machine learning?,what is machine learning?,1
+What is 2 + 2?,What is machine learning?,0
+Write a binary search in Python,write a binary search in python,1
+Extract email addresses from this text: john@example.com,Explain the intuition behind gradient descent,0
+What is the population of Japan,"What is the capital of France, who wrote Hamlet, and what is 5 * 13?",0
+Explain the intuition behind gradient descent,Explain the intuition behind gradient descent,1
+"What is the capital of France, who wrote Hamlet, and what is 5 * 13?","what is the capital of france, who wrote hamlet, and what is 5 * 13?",1
+Who wrote Hamlet,What is the population of Japan,0
+Hello,Write a binary search in Python,0
+Derive Euler's identity,Explain the intuition behind gradient descent,0
+Explain quantum entanglement,What is the population of Japan,0
+Who wrote Hamlet,Hello,0
+What is machine learning?,What is 2 + 2?,0
+Who wrote Hamlet,who wrote hamlet,1
+"What is the capital of France, who wrote Hamlet, and what is 5 * 13?",Derive Euler's identity,0
+Derive Euler's identity,Derive Euler's identity,1
+Extract email addresses from this text: john@example.com,Compare REST and GraphQL,0
+Hello,Write a Python class for a binary tree,0
+"What is the capital of France, who wrote Hamlet, and what is 5 * 13?","what is the capital of france, who wrote hamlet, and what is 5 * 13?",1
+Explain the intuition behind gradient descent,Hello,0
+What is machine learning?,"What is the capital of France, who wrote Hamlet, and what is 5 * 13?",0
+Write a binary search in Python,write a binary search in python,1
+What is 2 + 2?,spell apple backward,0
+Write a binary search in Python,Hello,0
+Hello,hello,1
+"What is the capital of France, who wrote Hamlet, and what is 5 * 13?",Write a binary search in Python,0
+Hello,hello,1
+Explain quantum entanglement,explain quantum entanglement,1
+What is machine learning?,Explain the intuition behind gradient descent,0
+What is 2 + 2?,Extract email addresses from this text: john@example.com,0
+What is 2 + 2?,Capital of France,0
+Explain the intuition behind gradient descent,Write a Python class for a binary tree,0
+What is the population of Japan,what is the population of japan,1
+Extract email addresses from this text: john@example.com,extract email addresses from this text: john@example.com,1
+Compare REST and GraphQL,compare rest and graphql,1
+What is machine learning?,Hello,0
+Who wrote Hamlet,"What is the capital of France, who wrote Hamlet, and what is 5 * 13?",0
+Hello,hello,1
+Write a Python class for a binary tree,Extract email addresses from this text: john@example.com,0
+What is the population of Japan,Explain the intuition behind gradient descent,0
+spell apple backward,spell apple backward,1
+What is the population of Japan,spell apple backward,0
+"What is the capital of France, who wrote Hamlet, and what is 5 * 13?","What is the capital of France, who wrote Hamlet, and what is 5 * 13?",1
+Explain quantum entanglement,Compare REST and GraphQL,0
+Compare REST and GraphQL,compare rest and graphql,1
+Capital of France,capital of france,1
+Hello,What is the population of Japan,0
+What is 2 + 2?,Capital of France,0
+What is 2 + 2?,what is 2 + 2?,1
+What is 2 + 2?,Write a Python class for a binary tree,0
+Hello,hello,1
+Compare REST and GraphQL,What is the population of Japan,0
+spell apple backward,Explain the intuition behind gradient descent,0
+Extract email addresses from this text: john@example.com,extract email addresses from this text: john@example.com,1
+Compare REST and GraphQL,What is machine learning?,0
+Capital of France,Capital of France,1
+"What is the capital of France, who wrote Hamlet, and what is 5 * 13?",Derive Euler's identity,0
+Derive Euler's identity,Compare REST and GraphQL,0
+What is 2 + 2?,"What is the capital of France, who wrote Hamlet, and what is 5 * 13?",0
+"What is the capital of France, who wrote Hamlet, and what is 5 * 13?","what is the capital of france, who wrote hamlet, and what is 5 * 13?",1
+spell apple backward,Explain quantum entanglement,0
+Capital of France,capital of france,1
+Hello,hello,1
+Who wrote Hamlet,Write a binary search in Python,0
+Write a Python class for a binary tree,write a python class for a binary tree,1
+What is machine learning?,Write a Python class for a binary tree,0
+Capital of France,What is 2 + 2?,0
+Hello,hello,1
+Capital of France,Explain the intuition behind gradient descent,0
+What is the population of Japan,Who wrote Hamlet,0
+Compare REST and GraphQL,What is the population of Japan,0
+Explain the intuition behind gradient descent,explain the intuition behind gradient descent,1
+What is 2 + 2?,what is 2 + 2?,1
+What is machine learning?,What is machine learning?,1
+Compare REST and GraphQL,Write a binary search in Python,0
+spell apple backward,What is machine learning?,0
+spell apple backward,spell apple backward,1
+Write a binary search in Python,What is the population of Japan,0
+Extract email addresses from this text: john@example.com,spell apple backward,0
+spell apple backward,spell apple backward,1
+Extract email addresses from this text: john@example.com,Compare REST and GraphQL,0
+Write a Python class for a binary tree,write a python class for a binary tree,1
+Hello,Capital of France,0
+Capital of France,capital of france,1
+Write a Python class for a binary tree,What is the population of Japan,0
+Explain the intuition behind gradient descent,explain the intuition behind gradient descent,1
+Extract email addresses from this text: john@example.com,What is 2 + 2?,0
+Derive Euler's identity,"What is the capital of France, who wrote Hamlet, and what is 5 * 13?",0
+Hello,Explain quantum entanglement,0
+What is the population of Japan,"What is the capital of France, who wrote Hamlet, and what is 5 * 13?",0
+What is the population of Japan,Write a binary search in Python,0
+"What is the capital of France, who wrote Hamlet, and what is 5 * 13?","What is the capital of France, who wrote Hamlet, and what is 5 * 13?",1
+Write a binary search in Python,Compare REST and GraphQL,0
+What is machine learning?,what is machine learning?,1
+Compare REST and GraphQL,Extract email addresses from this text: john@example.com,0
+Capital of France,Capital of France,1
+Hello,What is the population of Japan,0
+Who wrote Hamlet,Explain the intuition behind gradient descent,0
+Capital of France,capital of france,1
+Write a binary search in Python,Who wrote Hamlet,0
+Hello,spell apple backward,0
+What is machine learning?,"What is the capital of France, who wrote Hamlet, and what is 5 * 13?",0
+"What is the capital of France, who wrote Hamlet, and what is 5 * 13?",Write a Python class for a binary tree,0

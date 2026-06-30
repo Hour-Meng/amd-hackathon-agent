@@ -303,6 +303,7 @@ def test_check_local_health_caches_verdict():
 
 
 def test_local_timeout_falls_back_to_remote():
+    _reset_remote_validation_state()
     _seed_local_health(LOCAL_MODEL, True)
     reset_prior_local_failures()
     post_calls = {"local": 0, "remote": 0}
@@ -379,7 +380,15 @@ def test_prior_local_failure_forces_remote():
 # --- Remote model fallback ----------------------------------------------------------
 
 
+def _reset_remote_validation_state() -> None:
+    app._VALIDATED_REMOTE_MODELS = []
+    validated_path = app.ROOT_DIR / "validated_model_list.json"
+    if validated_path.exists():
+        validated_path.unlink()
+
+
 def test_remote_fallback_on_not_found_uses_next_candidate():
+    _reset_remote_validation_state()
     preferred, second = REMOTE_MODEL, REMOTE_FALLBACK
 
     def handler(url, body):
@@ -408,6 +417,7 @@ def test_remote_fallback_on_not_found_uses_next_candidate():
 
 
 def test_remote_malformed_200_falls_back_to_next_candidate():
+    _reset_remote_validation_state()
     preferred, second = REMOTE_MODEL, REMOTE_FALLBACK
 
     def handler(url, body):
@@ -447,6 +457,7 @@ def test_remote_malformed_200_falls_back_to_next_candidate():
 
 
 def test_remote_extracts_reasoning_content_when_message_content_missing():
+    _reset_remote_validation_state()
     def handler(url, body):
         return _FakeResponse(
             200,
@@ -477,6 +488,7 @@ def test_remote_extracts_reasoning_content_when_message_content_missing():
 
 def test_ui_route_label_matches_fallback_backend():
     """FALLBACK_REMOTE result must carry the actual Fireworks model used."""
+    _reset_remote_validation_state()
     _seed_local_health(LOCAL_MODEL, False)
 
     def handler(url, body):
@@ -744,6 +756,145 @@ def test_benchmark_runs_without_crash():
     report.results = [BenchmarkResult(), BenchmarkResult()]
     assert report.total_queries == 2
     assert len(report.results) == 2
+
+
+# --- Calibration + DeadZone tests --------------------------------------------
+
+
+def test_preprocess_pipeline():
+    from my_routing_agent.middleware.text_preprocess import preprocess_for_cache
+    assert preprocess_for_cache("  Hello, World!  ") == "hello world"
+    assert preprocess_for_cache("Café") == "café"
+
+
+def test_cache_threshold_sweep_recommends_under_fpr_cap():
+    import numpy as np
+    from my_routing_agent.calibration.cache_calibrator import (
+        recommend_threshold,
+        sweep_thresholds,
+    )
+
+    pairs = [
+        ("what is 2+2", "two plus two", True),
+        ("capital of france", "france capital", True),
+        ("hello", "write python code", False),
+    ]
+    embeddings = {
+        "what is 2+2": np.array([1.0, 0.0, 0.0]),
+        "two plus two": np.array([0.99, 0.01, 0.0]),
+        "capital of france": np.array([0.0, 1.0, 0.0]),
+        "france capital": np.array([0.0, 0.99, 0.01]),
+        "hello": np.array([0.0, 0.0, 1.0]),
+        "write python code": np.array([0.0, 0.0, 0.2]),
+    }
+    rows = sweep_thresholds(pairs, embeddings, start=0.80, stop=0.95, step=0.05)
+    rec = recommend_threshold(rows, max_fpr=0.01)
+    assert rec is not None
+    assert rec.false_positive_rate < 0.01
+
+
+def test_phantom_ensemble_abort_rules():
+    from my_routing_agent.calibration.phantom_calibrator import (
+        calibrate_ensemble,
+        collect_records,
+        should_abort,
+    )
+    from my_routing_agent.phantom.generation_signals import (
+        GenerationSignalRecord,
+        _synthetic_signals,
+        signal_vector_at_token,
+    )
+
+    records = collect_records(
+        app.DEFAULT_LOCAL_MODEL, n_good=120, n_bad=120, synthetic=True, seed=7
+    )
+    report = calibrate_ensemble(records)
+    good_record = GenerationSignalRecord(
+        prompt="hi", label="good", signals=_synthetic_signals("hi", "good"), source="synthetic"
+    )
+    bad_record = GenerationSignalRecord(
+        prompt="spell apple backward",
+        label="bad",
+        signals=_synthetic_signals("spell apple backward", "bad"),
+        source="synthetic",
+    )
+    success_vector = signal_vector_at_token(good_record, token_index=8)
+    failure_vector = signal_vector_at_token(bad_record, token_index=8)
+    assert should_abort(success_vector, report) is False
+    assert should_abort(failure_vector, report) is True
+
+
+def test_deadzone_remote_fallback_on_model_not_found():
+    from unittest.mock import patch
+    from my_routing_agent.phantom.deadzone_runner import DeadZoneRunner
+
+    calls: list[str] = []
+
+    def remote_call(
+        prompt: str,
+        *,
+        model_id: str,
+        max_tokens: int,
+        cancel_event,
+        token_counter,
+    ):
+        calls.append(model_id)
+        if "minimax" in model_id:
+            return None, "model not found", 0
+        token_counter.tokens_emitted = 24
+        return "remote ok", "ok", 24
+
+    with patch(
+        "my_routing_agent.phantom.deadzone_runner.should_abort",
+        return_value=True,
+    ):
+        runner = DeadZoneRunner(ensemble_report={"abort_threshold": 0.25})
+        answer, winner, meta = runner.run_race(
+            "hello there",
+            local_model="qwen2.5:0.5b",
+            validated_remote_models=[
+                "accounts/fireworks/models/minimax-m3",
+                "accounts/fireworks/models/qwen3p7-plus",
+            ],
+            remote_call=remote_call,
+            L_out_norm=0.4,
+            confidence=0.7,
+        )
+    assert len(calls) >= 2
+    assert answer == "remote ok"
+    assert meta["remote_models_tried"][0].endswith("minimax-m3")
+    assert any("qwen3p7-plus" in m for m in meta["remote_models_tried"])
+
+
+def test_validate_remote_models_filters_inaccessible():
+    from unittest.mock import patch
+    from my_routing_agent.remote.validate_models import validate_remote_models
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "data": [
+                    {"id": "accounts/fireworks/models/qwen3p7-plus"},
+                ]
+            }
+
+    with patch(
+        "my_routing_agent.remote.validate_models.requests.get",
+        return_value=_Resp(),
+    ):
+        out = validate_remote_models(
+            [
+                "accounts/fireworks/models/minimax-m3",
+                "accounts/fireworks/models/qwen3p7-plus",
+            ],
+            "fw_test",
+            output_path=app.ROOT_DIR / "validated_model_list.json",
+        )
+    assert out["validated"] == ["accounts/fireworks/models/qwen3p7-plus"]
+    assert "accounts/fireworks/models/minimax-m3" in out["removed"]
 
 
 def _run() -> int:

@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 
 from my_routing_agent.config import CacheConfig
+from my_routing_agent.middleware.text_preprocess import preprocess_for_cache
 
 logger = logging.getLogger("semantic_cache")
 
@@ -82,6 +83,16 @@ class SemanticCache:
                 entry.hits += 1
                 logger.info("CACHE HIT sim=%.4f idx=%d hits=%d", similarity, idx, entry.hits)
                 return entry
+            low = getattr(self._config, "candidate_range_low", self._config.threshold - 0.02)
+            high = getattr(self._config, "candidate_range_high", self._config.threshold + 0.02)
+            if low <= similarity < self._config.threshold:
+                logger.info(
+                    "CACHE SOFT-CANDIDATE sim=%.4f in [%.2f, %.2f) — below hard threshold %.2f",
+                    similarity,
+                    low,
+                    self._config.threshold,
+                    self._config.threshold,
+                )
         except Exception as exc:
             logger.warning("Cache lookup error: %s", exc)
         return None
@@ -169,7 +180,8 @@ class SemanticCache:
 
     def _encode(self, text: str) -> np.ndarray | None:
         try:
-            return self._encoder.encode(text, normalize_embeddings=True)
+            cleaned = preprocess_for_cache(text)
+            return self._encoder.encode(cleaned, normalize_embeddings=True)
         except Exception as exc:
             logger.warning("Encoding error: %s", exc)
             return None
