@@ -2562,7 +2562,6 @@ def main() -> None:
             help="Band around θ that triggers PHANTOM speculative race.",
         )
 
-<<<<<<< HEAD
         entropy_threshold = st.slider(
             "Entropy Abort Threshold",
             min_value=2.0, max_value=5.0, value=3.5, step=0.1,
@@ -2574,16 +2573,8 @@ def main() -> None:
 
         uploaded_image = st.file_uploader(
             "Upload Image (optional)",
-            type=["jpg", "jpeg", "png"],
-            help="When attached, routes through vision pipeline.",
-=======
-        # Optional image upload for vision routing. If attached, the next prompt routes through the vision pipeline.
-
-        uploaded_image = st.file_uploader(
-            "Upload Image (optional)",
             type=["jpg", "jpeg", "png", "webp", "bmp", "tiff", "tif", "gif"],
             help="When attached, the next message routes through the vision pipeline.",
->>>>>>> 4149d71c (My local changes)
         )
 
         if uploaded_image is not None:
