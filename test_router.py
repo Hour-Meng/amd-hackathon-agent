@@ -219,11 +219,11 @@ def test_hi_stays_local_when_healthy():
     assert decision.model_id == LOCAL_MODEL
 
 
-def test_hi_routes_remote_when_local_unhealthy():
+def test_hi_routes_canned_when_local_unhealthy():
     decision = _decide("hi", local_unavailable=True)
-    assert decision.route == "REMOTE", decision
-    assert decision.reason == LOCAL_UNAVAILABLE_REASON
-    assert decision.model_id == REMOTE_MODEL
+    assert decision.route == "LOCAL", decision
+    assert decision.reason == app.CANNED_REPLY_REASON
+    assert decision.model_id == "canned-reply"
 
 
 def test_where_is_cambodia_always_routes_remote():
@@ -370,11 +370,20 @@ def test_unhealthy_local_skips_inference_call():
 
 
 def test_prior_local_failure_forces_remote():
+    """Non-greeting prompts still escalate after a prior local failure."""
+    reset_prior_local_failures()
+    mark_prior_local_failure("format this list: a, b, c")
+    decision = _decide("format this list: a, b, c")
+    assert decision.route == "REMOTE"
+    assert "prior-local-failure" in decision.reason
+
+
+def test_greeting_ignores_prior_local_failure():
     reset_prior_local_failures()
     mark_prior_local_failure("hello")
     decision = _decide("hello")
-    assert decision.route == "REMOTE"
-    assert "prior-local-failure" in decision.reason
+    assert decision.route == "LOCAL"
+    assert "greeting" in decision.reason
 
 
 # --- Remote model fallback ----------------------------------------------------------
@@ -756,6 +765,90 @@ def test_benchmark_runs_without_crash():
     report.results = [BenchmarkResult(), BenchmarkResult()]
     assert report.total_queries == 2
     assert len(report.results) == 2
+
+
+# --- PHANTOM routing UX fixes ---------------------------------------------------
+
+
+def test_greeting_routes_local_not_remote():
+    _seed_local_health(LOCAL_MODEL, True)
+    decision = _decide("hello")
+    assert decision.route == "LOCAL"
+    assert decision.reason in {LOCAL_GREETING_REASON, app.CANNED_REPLY_REASON}
+
+
+def test_greeting_budget_is_tiny():
+    decision = _decide("thanks")
+    budget = app.compute_remote_max_tokens("thanks", decision)
+    assert budget == app.REMOTE_MAX_TOKENS_GREETING
+
+
+def test_txt_context_builder_truncates():
+    raw = b"line\n" * 2000
+    block, chars = app.build_txt_context(raw, max_chars=100)
+    assert "[Attached context from file]" in block
+    assert chars == 100
+    assert "truncated" in block
+
+
+def test_dispatcher_matches_router_for_greeting():
+    _seed_local_health(LOCAL_MODEL, True)
+
+    def handler(url, body):
+        return _FakeResponse(
+            200,
+            payload={
+                "choices": [{"message": {"content": "Hello there!"}}],
+                "usage": {"total_tokens": 3},
+            },
+        )
+
+    with _patch_post(handler):
+        result = app.route_and_execute(
+            "hi",
+            THRESHOLD,
+            "fw_test",
+            LOCAL_MODEL,
+            REMOTE_MODEL,
+        )
+    assert result.route in {"TEXT_LOCAL", "MATH_PYTHON"}
+    assert result.model_used != REMOTE_MODEL
+
+
+def test_slow_remote_ui_timeout_stays_responsive():
+    import time as _time
+
+    def slow_handler(url, body):
+        _time.sleep(0.05)
+        return _FakeResponse(
+            200,
+            payload={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"total_tokens": 2},
+            },
+        )
+
+    original_timeout = app.REMOTE_UI_TIMEOUT_SECONDS
+    app.REMOTE_UI_TIMEOUT_SECONDS = 1
+    try:
+        with _patch_post(slow_handler):
+            result = app.run_request_nonblocking(
+                app.route_and_execute,
+                "Explain quantum entanglement in detail",
+                THRESHOLD,
+                "fw_test",
+                LOCAL_MODEL,
+                REMOTE_MODEL,
+            )
+        assert result.answer
+        assert "timed out" not in result.answer.lower()
+    finally:
+        app.REMOTE_UI_TIMEOUT_SECONDS = original_timeout
+
+
+def test_hard_prompt_still_routes_remote():
+    decision = _decide("Write a binary search tree in Python with all operations")
+    assert decision.route == "REMOTE"
 
 
 # --- Calibration + DeadZone tests --------------------------------------------
