@@ -3091,6 +3091,26 @@ def _bootstrap_angkor_session() -> None:
     _ANGKOR_CACHE = ss.get("angkor_cache")
 
 
+def _load_saved_api_key() -> str:
+    path = ROOT_DIR / ".fireworks_api_key"
+    if path.exists():
+        try:
+            key = path.read_text(encoding="utf-8").strip()
+            if key:
+                return key
+        except Exception:
+            pass
+    return ""
+
+
+def _save_api_key(key: str) -> None:
+    path = ROOT_DIR / ".fireworks_api_key"
+    try:
+        path.write_text(key.strip(), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def init_session_state() -> None:
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -3100,6 +3120,8 @@ def init_session_state() -> None:
         st.session_state.attached_txt_name = ""
     if "_pending_chat" not in st.session_state:
         st.session_state._pending_chat = None
+    if "fireworks_api_key" not in st.session_state:
+        st.session_state.fireworks_api_key = _load_saved_api_key()
 
 
 def _render_orchestration_caption(result: RouteResult) -> None:
@@ -3231,12 +3253,17 @@ def main() -> None:
     with st.sidebar:
         st.header("⚙️ ANGKOR + PHANTOM Configuration")
 
-        api_key = st.text_input(
+        entered_key = st.text_input(
             "Fireworks API Key",
             type="password",
             placeholder="fw_...",
-            help="Required for remote, vision, and fallback routes.",
+            value=st.session_state.fireworks_api_key,
+            help="Required for remote, vision, and fallback routes. Saved to disk once entered.",
         )
+        if entered_key != st.session_state.fireworks_api_key:
+            st.session_state.fireworks_api_key = entered_key
+            _save_api_key(entered_key)
+        api_key = entered_key
 
         active_local_model = st.text_input(
             "Local Utility Model (Ollama)",
