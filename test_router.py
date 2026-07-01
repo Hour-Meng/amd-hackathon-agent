@@ -851,6 +851,169 @@ def test_hard_prompt_still_routes_remote():
     assert decision.route == "REMOTE"
 
 
+# --- UI freeze / timing instrumentation -----------------------------------------
+
+
+def test_hi_instant_dispatch_under_200ms():
+    started = time.perf_counter()
+    result = app.dispatch_instant_greeting(
+        "hi",
+        THRESHOLD,
+        LOCAL_MODEL,
+        REMOTE_MODEL,
+    )
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    assert elapsed_ms < app.INSTANT_GREETING_MS_BUDGET, f"took {elapsed_ms:.1f}ms"
+    assert result.answer
+    assert result.diagnostics.get("instant_greeting") is True
+    assert result.diagnostics.get("skipped_phantom") is True
+    assert result.diagnostics.get("skipped_cache") is True
+
+
+def test_hi_timing_stages_logged():
+    result = app.dispatch_instant_greeting(
+        "hi",
+        THRESHOLD,
+        LOCAL_MODEL,
+        REMOTE_MODEL,
+    )
+    timing = result.diagnostics.get("timing")
+    assert isinstance(timing, dict)
+    stages = timing.get("stages_ms", {})
+    assert "input_received" in stages
+    assert "router_start" in stages
+    assert "route_decision" in stages
+    assert "final_response" in stages
+    assert timing.get("complexity_score") is not None
+
+
+def test_hi_skips_phantom_and_cache():
+    phantom_called = {"n": 0}
+    cache_called = {"n": 0}
+    orig_phantom = app._angkor_phantom_execute
+    orig_cache = app._cache_lookup
+
+    def _phantom(*_a, **_k):
+        phantom_called["n"] += 1
+        return None
+
+    def _cache(_p):
+        cache_called["n"] += 1
+        return None
+
+    app._angkor_phantom_execute = _phantom  # type: ignore[assignment]
+    app._cache_lookup = _cache  # type: ignore[assignment]
+    try:
+        result = app.process_user_request(
+            "hi",
+            THRESHOLD,
+            "fw_test",
+            LOCAL_MODEL,
+            REMOTE_MODEL,
+        )
+    finally:
+        app._angkor_phantom_execute = orig_phantom  # type: ignore[assignment]
+        app._cache_lookup = orig_cache  # type: ignore[assignment]
+
+    assert phantom_called["n"] == 0
+    assert cache_called["n"] == 0
+    assert result.diagnostics.get("instant_greeting") is True
+
+
+def test_greeting_no_ollama_round_trip():
+    _seed_local_health(LOCAL_MODEL, True)
+    posts = []
+
+    def handler(url, body):
+        posts.append(url)
+        return _FakeResponse(200, payload={"response": "slow local"})
+
+    with _patch_post(handler):
+        result = app.route_and_execute(
+            "hello",
+            THRESHOLD,
+            "fw_test",
+            LOCAL_MODEL,
+            REMOTE_MODEL,
+        )
+    assert not any("11434" in str(u) for u in posts)
+    assert result.model_used == "canned-reply"
+
+
+def test_ui_feedback_timing_budget():
+    timing = app.RequestTiming()
+    timing.mark("input_received")
+    timing.mark("ui_feedback_shown")
+    feedback_ms = timing.ms_between("input_received", "ui_feedback_shown")
+    assert feedback_ms is not None
+    assert feedback_ms < app.INSTANT_GREETING_MS_BUDGET
+
+
+def test_2_plus_2_instant_dispatch_under_200ms():
+    started = time.perf_counter()
+    result = app.dispatch_instant_trivial(
+        "what is 2 + 2?",
+        THRESHOLD,
+        LOCAL_MODEL,
+        REMOTE_MODEL,
+    )
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    assert elapsed_ms < app.INSTANT_GREETING_MS_BUDGET, f"took {elapsed_ms:.1f}ms"
+    assert result.route == "MATH_PYTHON"
+    assert result.answer == "4"
+    assert result.diagnostics.get("skipped_verify") is True
+
+
+def test_missing_api_key_fails_before_phantom():
+    phantom_called = {"n": 0}
+    cache_called = {"n": 0}
+    orig_phantom = app._angkor_phantom_execute
+    orig_cache = app._cache_lookup
+
+    def _phantom(*_a, **_k):
+        phantom_called["n"] += 1
+        return None
+
+    def _cache(_p):
+        cache_called["n"] += 1
+        return None
+
+    app._angkor_phantom_execute = _phantom  # type: ignore[assignment]
+    app._cache_lookup = _cache  # type: ignore[assignment]
+    try:
+        result = app.process_user_request(
+            "Explain quantum entanglement in detail with equations",
+            THRESHOLD,
+            "",
+            LOCAL_MODEL,
+            REMOTE_MODEL,
+        )
+    finally:
+        app._angkor_phantom_execute = orig_phantom  # type: ignore[assignment]
+        app._cache_lookup = orig_cache  # type: ignore[assignment]
+
+    assert phantom_called["n"] == 0
+    assert cache_called["n"] == 0
+    assert result.diagnostics.get("fail_fast") is True
+    assert "API Key required" in result.answer
+
+
+def test_trivial_math_single_route_decision():
+    calls = {"n": 0}
+    orig = app.route_decision
+
+    def counting_route_decision(*args, **kwargs):
+        calls["n"] += 1
+        return orig(*args, **kwargs)
+
+    app.route_decision = counting_route_decision  # type: ignore[assignment]
+    try:
+        app.process_user_request("2 + 2", THRESHOLD, "fw_test", LOCAL_MODEL, REMOTE_MODEL)
+    finally:
+        app.route_decision = orig  # type: ignore[assignment]
+    assert calls["n"] == 1
+
+
 # --- Calibration + DeadZone tests --------------------------------------------
 
 

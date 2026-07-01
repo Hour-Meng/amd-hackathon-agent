@@ -84,6 +84,7 @@ REMOTE_MAX_TOKENS_GREETING = 32
 REMOTE_MAX_TOKENS_SIMPLE = 64
 REMOTE_MAX_TOKENS_DEFAULT = 512
 REMOTE_UI_TIMEOUT_SECONDS = 120
+INSTANT_GREETING_MS_BUDGET = 200  # UI must show feedback within this window for greetings
 ROOT_DIR = Path(__file__).resolve().parent
 UI_EXECUTOR = ThreadPoolExecutor(max_workers=2)
 
@@ -365,6 +366,62 @@ class RouteResult:
     message_id: str = ""
 
 
+@dataclass
+class RequestTiming:
+    """Per-request stage timestamps for routing/dispatch latency diagnosis."""
+
+    origin: float = field(default_factory=time.perf_counter)
+    stages: dict[str, float] = field(default_factory=dict)
+    meta: dict[str, object] = field(default_factory=dict)
+
+    def mark(self, stage: str, **meta: object) -> None:
+        self.stages[stage] = time.perf_counter()
+        if meta:
+            self.meta.update(meta)
+
+    def ms_since_origin(self, stage: str) -> float | None:
+        ts = self.stages.get(stage)
+        if ts is None:
+            return None
+        return (ts - self.origin) * 1000.0
+
+    def ms_between(self, start: str, end: str) -> float | None:
+        s, e = self.stages.get(start), self.stages.get(end)
+        if s is None or e is None:
+            return None
+        return (e - s) * 1000.0
+
+    def to_dict(self) -> dict[str, object]:
+        out: dict[str, object] = {"stages_ms": {}}
+        stages_ms: dict[str, float] = {}
+        for name, ts in self.stages.items():
+            stages_ms[name] = round((ts - self.origin) * 1000.0, 2)
+        out["stages_ms"] = stages_ms
+        router_ms = self.ms_between("router_start", "route_decision")
+        if router_ms is not None:
+            out["router_ms"] = round(router_ms, 2)
+        model_ms = self.ms_between("model_call_start", "model_call_end")
+        if model_ms is not None:
+            out["model_call_ms"] = round(model_ms, 2)
+        total_ms = self.ms_between("input_received", "final_response")
+        if total_ms is not None:
+            out["total_ms"] = round(total_ms, 2)
+        feedback_ms = self.ms_between("input_received", "ui_feedback_shown")
+        if feedback_ms is not None:
+            out["ui_feedback_ms"] = round(feedback_ms, 2)
+        first_token_ms = self.ms_between("model_call_start", "first_token")
+        if first_token_ms is not None:
+            out["first_token_ms"] = round(first_token_ms, 2)
+        out.update(self.meta)
+        return out
+
+    def attach(self, result: RouteResult) -> None:
+        result.diagnostics["timing"] = self.to_dict()
+
+    def log_summary(self, prompt: str) -> None:
+        logger.info("TIMING prompt=%r %s", prompt.strip()[:60], self.to_dict())
+
+
 def _render_key(prefix: str, result: RouteResult, suffix: str = "") -> str:
     """Unique Streamlit key for telemetry widgets."""
     return f"{prefix}_{id(result)}_{suffix}".rstrip("_")
@@ -523,6 +580,46 @@ def get_canned_greeting_reply(prompt: str) -> str:
     if "how are you" in lowered:
         return "I'm doing well, thanks for asking! How can I help you today?"
     return "Hello! How can I help you today?"
+
+
+def is_pure_greeting_request(
+    prompt: str,
+    *,
+    has_image: bool = False,
+    has_txt_context: bool = False,
+) -> bool:
+    """True for trivial greetings with no attachments — eligible for instant UI path."""
+    if has_image or has_txt_context:
+        return False
+    return is_greeting_or_tiny_chat(prompt)
+
+
+def should_skip_expensive_preprocess(
+    prompt: str,
+    *,
+    has_image: bool = False,
+    has_txt_context: bool = False,
+) -> bool:
+    """Skip FAISS cache, PHANTOM race, planner, and cascade verify for trivial prompts."""
+    if has_image or has_txt_context:
+        return False
+    if is_greeting_or_tiny_chat(prompt):
+        return True
+    if would_math_intercept(prompt):
+        return True
+    return False
+
+
+def is_trivial_fast_path(
+    prompt: str,
+    *,
+    has_image: bool = False,
+    has_txt_context: bool = False,
+) -> bool:
+    """UI instant path: greetings and deterministic math."""
+    return should_skip_expensive_preprocess(
+        prompt, has_image=has_image, has_txt_context=has_txt_context
+    )
 
 
 def build_txt_context(file_bytes: bytes | None, *, max_chars: int = MAX_TXT_CONTEXT_CHARS) -> tuple[str, int]:
@@ -697,6 +794,35 @@ def is_local_unavailable(model_id: str) -> bool:
     return not check_local_health(model_id)
 
 
+def get_local_health_for_ui(model_id: str) -> bool | None:
+    """
+    Non-blocking health read for the sidebar banner.
+    Returns cached verdict or None while a background refresh is pending.
+    """
+    key = (model_id or "").strip()
+    now = time.time()
+    stale_verdict: bool | None = None
+    with _LOCAL_HEALTH_LOCK:
+        cached = _LOCAL_HEALTH_CACHE.get(key)
+        if cached and cached[0] > now:
+            return cached[1]
+        if cached:
+            stale_verdict = cached[1]
+    schedule_local_health_refresh(key)
+    return stale_verdict
+
+
+def schedule_local_health_refresh(model_id: str) -> None:
+    """Probe Ollama on a worker thread so the Streamlit rerun is not blocked."""
+    key = (model_id or "").strip()
+    if not key:
+        return
+    try:
+        UI_EXECUTOR.submit(check_local_health, key)
+    except Exception as exc:
+        logger.debug("Could not schedule health refresh for %s: %s", key, exc)
+
+
 @dataclass
 class RouterDecision:
     """Authoritative routing decision produced before any backend is touched."""
@@ -851,6 +977,9 @@ def _log_dispatch_telemetry(
         match,
         prompt.strip()[:80],
     )
+    timing_diag = result.diagnostics.get("timing")
+    if timing_diag:
+        logger.info("DISPATCH_TIMING %s", timing_diag)
 
 
 def _log_executed(result: RouteResult) -> None:
@@ -1532,6 +1661,144 @@ def plan_request(
     )
 
 
+def dispatch_instant_trivial(
+    prompt: str,
+    threshold: int,
+    active_local_model: str,
+    active_remote_model: str,
+    *,
+    timing: RequestTiming | None = None,
+) -> RouteResult:
+    """
+    Fastest trivial path: math eval or canned greeting — no cache, PHANTOM, verify, or Ollama.
+    """
+    if would_math_intercept(prompt):
+        tracker = timing or RequestTiming()
+        tracker.mark("input_received")
+        tracker.mark("router_start")
+        score = min(100, calculate_complexity(prompt))
+        tracker.mark("complexity_computed", complexity_score=score)
+        decision = route_decision(
+            prompt,
+            threshold,
+            has_image=False,
+            active_local_model=active_local_model,
+            active_remote_model=active_remote_model,
+            local_unavailable=False,
+            has_txt_context=False,
+        )
+        tracker.mark(
+            "route_decision",
+            route=decision.route,
+            reason=decision.reason,
+            complexity_score=decision.complexity_score,
+        )
+        tracker.mark("model_call_start")
+        math_result = safe_math_agent(prompt, tracker.origin)
+        tracker.mark("model_call_end")
+        tracker.mark("final_response")
+        if math_result is not None:
+            math_result.routing_reason = LOCAL_MATH_REASON
+            math_result.complexity_score = decision.complexity_score
+            math_result.confidence_score = decision.confidence_score
+            math_result.diagnostics.update({
+                "instant_trivial": True,
+                "skipped_cache": True,
+                "skipped_phantom": True,
+                "skipped_verify": True,
+            })
+            tracker.attach(math_result)
+            tracker.log_summary(prompt)
+            return math_result
+    return dispatch_instant_greeting(
+        prompt,
+        threshold,
+        active_local_model,
+        active_remote_model,
+        timing=timing,
+    )
+
+
+def dispatch_instant_greeting(
+    prompt: str,
+    threshold: int,
+    active_local_model: str,
+    active_remote_model: str,
+    *,
+    timing: RequestTiming | None = None,
+) -> RouteResult:
+    """
+    Fastest greeting path: router decision only, canned reply, no health probe,
+    no FAISS, no PHANTOM, no Ollama round-trip.
+    """
+    tracker = timing or RequestTiming()
+    tracker.mark("input_received")
+    tracker.mark("router_start")
+    score = min(100, calculate_complexity(prompt))
+    tracker.mark("complexity_computed", complexity_score=score)
+    decision = route_decision(
+        prompt,
+        threshold,
+        has_image=False,
+        active_local_model=active_local_model,
+        active_remote_model=active_remote_model,
+        local_unavailable=False,
+        has_txt_context=False,
+    )
+    tracker.mark(
+        "route_decision",
+        route=decision.route,
+        reason=decision.reason,
+        complexity_score=decision.complexity_score,
+    )
+    token_budget = compute_remote_max_tokens(prompt, decision)
+    started = tracker.origin
+
+    if would_math_intercept(prompt):
+        tracker.mark("model_call_start")
+        math_result = safe_math_agent(prompt, started)
+        tracker.mark("model_call_end")
+        tracker.mark("final_response")
+        if math_result is not None:
+            math_result.routing_reason = LOCAL_MATH_REASON
+            math_result.complexity_score = decision.complexity_score
+            math_result.confidence_score = decision.confidence_score
+            tracker.attach(math_result)
+            tracker.log_summary(prompt)
+            return math_result
+
+    tracker.mark("model_call_start")
+    answer = get_canned_greeting_reply(prompt)
+    tracker.mark("first_token")
+    tracker.mark("model_call_end")
+    tracker.mark("final_response")
+    result = RouteResult(
+        answer=answer,
+        route="TEXT_LOCAL",
+        tokens=0,
+        latency_ms=(time.perf_counter() - started) * 1000.0,
+        original_prompt=prompt,
+        model_used="canned-reply",
+        routing_reason=decision.reason if decision.reason != CANNED_REPLY_REASON else CANNED_REPLY_REASON,
+        complexity_score=decision.complexity_score,
+        confidence_score=decision.confidence_score,
+        diagnostics={
+            "token_budget": token_budget,
+            "instant_greeting": True,
+            "skipped_health_probe": True,
+            "skipped_phantom": True,
+            "skipped_cache": True,
+        },
+    )
+    _log_dispatch_telemetry(
+        prompt, decision, result, token_budget=token_budget,
+        file_attached=False, dispatcher_route=result.route,
+    )
+    tracker.attach(result)
+    tracker.log_summary(prompt)
+    return result
+
+
 def route_and_execute(
     prompt: str,
     threshold: int,
@@ -1542,16 +1809,40 @@ def route_and_execute(
     *,
     allow_heavy_local: bool = False,
     has_txt_context: bool = False,
+    timing: RequestTiming | None = None,
+    fast_greeting: bool = False,
 ) -> RouteResult:
     """
     Dispatcher: execute exactly what route_decision() authorizes.
     """
     started = time.perf_counter()
     has_image = image_file is not None
+    pure_greeting = is_pure_greeting_request(
+        prompt, has_image=has_image, has_txt_context=has_txt_context
+    )
 
-    local_healthy = not has_image and check_local_health(active_local_model)
-    local_unavailable = not has_image and not local_healthy
+    if timing:
+        timing.mark("router_start")
+
+    if pure_greeting and fast_greeting:
+        return dispatch_instant_greeting(
+            prompt,
+            threshold,
+            active_local_model,
+            active_remote_model,
+            timing=timing,
+        )
+
+    if pure_greeting:
+        local_healthy = True
+        local_unavailable = False
+    else:
+        local_healthy = not has_image and check_local_health(active_local_model)
+        local_unavailable = not has_image and not local_healthy
     memory_pressure = get_memory_usage() if not has_image else None
+
+    if timing:
+        timing.mark("complexity_computed", complexity_score=min(100, calculate_complexity(prompt)))
 
     decision = route_decision(
         prompt,
@@ -1564,6 +1855,13 @@ def route_and_execute(
         allow_heavy_local=allow_heavy_local,
         has_txt_context=has_txt_context,
     )
+    if timing:
+        timing.mark(
+            "route_decision",
+            route=decision.route,
+            reason=decision.reason,
+            complexity_score=decision.complexity_score,
+        )
     token_budget = compute_remote_max_tokens(prompt, decision)
     _log_routing(prompt, decision, local_healthy=local_healthy or has_image)
 
@@ -1584,6 +1882,41 @@ def route_and_execute(
             prompt, decision, result, token_budget=token_budget,
             file_attached=has_txt_context, dispatcher_route=result.route,
         )
+        if timing:
+            timing.mark("final_response")
+            timing.attach(result)
+        return result
+
+    if decision.reason == LOCAL_GREETING_REASON and pure_greeting:
+        if timing:
+            timing.mark("model_call_start")
+        answer = get_canned_greeting_reply(prompt)
+        if timing:
+            timing.mark("first_token")
+            timing.mark("model_call_end")
+        result = RouteResult(
+            answer=answer,
+            route="TEXT_LOCAL",
+            tokens=0,
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+            original_prompt=prompt,
+            model_used="canned-reply",
+            routing_reason=LOCAL_GREETING_REASON,
+            complexity_score=decision.complexity_score,
+            confidence_score=decision.confidence_score,
+            diagnostics={
+                "token_budget": token_budget,
+                "instant_greeting": True,
+                "skipped_local_ollama": True,
+            },
+        )
+        _log_dispatch_telemetry(
+            prompt, decision, result, token_budget=token_budget,
+            file_attached=has_txt_context, dispatcher_route=result.route,
+        )
+        if timing:
+            timing.mark("final_response")
+            timing.attach(result)
         return result
 
     if has_image:
@@ -1610,6 +1943,8 @@ def route_and_execute(
             decision.reason == CHARACTER_LEVEL_GUARD_REASON
             or decision.reason in LOCAL_DISTILL_UNSAFE_REASONS
         )
+        if timing:
+            timing.mark("model_call_start")
         result = _route_text_remote(
             prompt,
             api_key,
@@ -1619,6 +1954,10 @@ def route_and_execute(
             skip_distillation=preserve_text,
             max_tokens=token_budget,
         )
+        if timing and result.answer:
+            timing.mark("first_token")
+        if timing:
+            timing.mark("model_call_end")
         result.routing_reason = decision.reason
         result.complexity_score = decision.complexity_score
         result.confidence_score = decision.confidence_score
@@ -1627,10 +1966,18 @@ def route_and_execute(
             prompt, decision, result, token_budget=token_budget,
             file_attached=has_txt_context, dispatcher_route=result.route,
         )
+        if timing:
+            timing.mark("final_response")
+            timing.attach(result)
+            timing.log_summary(prompt)
         return result
 
     math_result = safe_math_agent(prompt, started)
     if math_result is not None:
+        if timing:
+            timing.mark("model_call_start")
+            timing.mark("first_token")
+            timing.mark("model_call_end")
         math_result.routing_reason = LOCAL_MATH_REASON
         math_result.complexity_score = decision.complexity_score
         math_result.confidence_score = decision.confidence_score
@@ -1638,11 +1985,21 @@ def route_and_execute(
             prompt, decision, math_result, token_budget=token_budget,
             file_attached=has_txt_context, dispatcher_route=math_result.route,
         )
+        if timing:
+            timing.mark("final_response")
+            timing.attach(math_result)
+            timing.log_summary(prompt)
         return math_result
 
+    if timing:
+        timing.mark("model_call_start")
     result = _route_text_local(
         prompt, api_key, active_local_model, active_remote_model, started
     )
+    if timing and result.answer:
+        timing.mark("first_token")
+    if timing:
+        timing.mark("model_call_end")
     if result.fallback_used and is_greeting_or_tiny_chat(prompt) and not has_txt_context:
         result = RouteResult(
             answer=get_canned_greeting_reply(prompt),
@@ -1664,6 +2021,10 @@ def route_and_execute(
         prompt, decision, result, token_budget=token_budget,
         file_attached=has_txt_context, dispatcher_route=result.route,
     )
+    if timing:
+        timing.mark("final_response")
+        timing.attach(result)
+        timing.log_summary(prompt)
     return result
 
 
@@ -1808,7 +2169,7 @@ def _angkor_phantom_execute(
 
 def _cache_lookup(prompt: str) -> RouteResult | None:
     global _ANGKOR_CACHE
-    cache = _ANGKOR_CACHE
+    cache = _lazy_init_angkor_cache()
     if cache is None:
         return None
     entry = cache.lookup(prompt)
@@ -1828,7 +2189,7 @@ def _cache_lookup(prompt: str) -> RouteResult | None:
 
 def _cache_store(prompt: str, result: RouteResult) -> None:
     global _ANGKOR_CACHE
-    cache = _ANGKOR_CACHE
+    cache = _lazy_init_angkor_cache()
     if cache is None:
         return
     cache.store(prompt, result.answer, metadata={
@@ -1845,6 +2206,11 @@ def _verify_local_result(
     started: float,
 ) -> RouteResult:
     global _ANGKOR_VERIFIER
+    # Trivial local paths never need cascade verify (avoids loading MiniLM + remote escalate).
+    if result.route in ("MATH_PYTHON",) or result.diagnostics.get("instant_greeting") or result.diagnostics.get("instant_trivial"):
+        return result
+    if not api_key or not api_key.strip():
+        return result
     verifier = _ANGKOR_VERIFIER
     if verifier is None:
         return result
@@ -1882,9 +2248,12 @@ def process_user_request(
     *,
     allow_heavy_local: bool = False,
     has_txt_context: bool = False,
+    timing: RequestTiming | None = None,
 ) -> RouteResult:
     """Top-level orchestrator with ANGKOR + PHANTOM integration."""
     started = time.perf_counter()
+    if timing:
+        timing.mark("input_received")
 
     if image_file is not None:
         clf = classify_prompt(
@@ -1893,26 +2262,66 @@ def process_user_request(
         result = route_and_execute(
             prompt, threshold, api_key, active_local_model, active_remote_model,
             image_file=image_file, allow_heavy_local=allow_heavy_local,
-            has_txt_context=has_txt_context,
+            has_txt_context=has_txt_context, timing=timing,
         )
         return _attach_orchestration(result, clf)
 
-    cache_hit = _cache_lookup(prompt)
-    if cache_hit is not None:
-        return cache_hit
-
-    # Fast precheck: never run PHANTOM adaptive race for pure greetings.
-    if is_greeting_or_tiny_chat(prompt) and not has_txt_context:
-        result = route_and_execute(
-            prompt, threshold, api_key, active_local_model, active_remote_model,
-            allow_heavy_local=allow_heavy_local, has_txt_context=False,
+    # Fastest path first — skip FAISS, PHANTOM, verify for greetings and math.
+    if should_skip_expensive_preprocess(prompt, has_txt_context=has_txt_context):
+        result = dispatch_instant_trivial(
+            prompt,
+            threshold,
+            active_local_model,
+            active_remote_model,
+            timing=timing,
         )
-        _cache_store(prompt, result)
         return result
 
+    if not api_key or not api_key.strip():
+        preview_decision = route_decision(
+            prompt,
+            threshold,
+            has_image=False,
+            active_local_model=active_local_model,
+            active_remote_model=active_remote_model,
+            local_unavailable=False,
+            has_txt_context=has_txt_context,
+        )
+        if preview_decision.route == "REMOTE":
+            return RouteResult(
+                answer=(
+                    "❌ **Fireworks API Key required.**\n\n"
+                    "Enter your API key in the sidebar to route this prompt remotely."
+                ),
+                route="TEXT_REMOTE",
+                tokens=0,
+                latency_ms=(time.perf_counter() - started) * 1000.0,
+                original_prompt=prompt,
+                model_used=active_remote_model,
+                routing_reason=preview_decision.reason,
+                complexity_score=preview_decision.complexity_score,
+                diagnostics={"fail_fast": True, "skipped_phantom": True, "skipped_cache": True},
+            )
+
+    if timing:
+        timing.mark("cache_lookup_start")
+    cache_hit = _cache_lookup(prompt)
+    if timing:
+        timing.mark("cache_lookup_end", cache_hit=cache_hit is not None)
+    if cache_hit is not None:
+        if timing:
+            timing.mark("final_response")
+            timing.attach(cache_hit)
+            timing.log_summary(prompt)
+        return cache_hit
+
+    if timing:
+        timing.mark("phantom_check_start")
     phantom = _angkor_phantom_execute(
         prompt, api_key, active_local_model, active_remote_model, started,
     )
+    if timing:
+        timing.mark("phantom_check_end", phantom_ran=phantom is not None)
     if phantom is not None:
         phantom = _verify_local_result(prompt, phantom, api_key, started)
         _cache_store(prompt, phantom)
@@ -1927,6 +2336,7 @@ def process_user_request(
         result = route_and_execute(
             prompt, threshold, api_key, active_local_model, active_remote_model,
             allow_heavy_local=allow_heavy_local, has_txt_context=has_txt_context,
+            timing=timing,
         )
         result = _verify_local_result(prompt, result, api_key, started)
         _cache_store(prompt, result)
@@ -2628,6 +3038,59 @@ def render_assistant_message(message: dict) -> None:
     st.markdown(message["content"])
 
 
+def _lazy_init_angkor_cache() -> SemanticCache | None:
+    """Load FAISS cache once per Streamlit session (not every script rerun)."""
+    global _ANGKOR_CACHE
+    if _ANGKOR_CACHE is not None:
+        return _ANGKOR_CACHE
+    if not _has_ui_context():
+        return None
+    ss = st.session_state
+    if ss.get("angkor_cache_initialized"):
+        _ANGKOR_CACHE = ss.get("angkor_cache")
+        return _ANGKOR_CACHE
+    if ss.get("angkor_cache_initializing"):
+        return None
+    ss.angkor_cache_initializing = True
+    cache = SemanticCache()
+    initialized = cache.initialize()
+    if initialized:
+        ss.angkor_cache = cache
+        _ANGKOR_CACHE = cache
+    else:
+        ss.angkor_cache = None
+    ss.angkor_cache_initialized = True
+    ss.angkor_cache_initializing = False
+    return _ANGKOR_CACHE
+
+
+def _bootstrap_angkor_session() -> None:
+    """Persist ANGKOR/PHANTOM singletons across Streamlit reruns via session_state."""
+    global _ANGKOR_CACHE, _ANGKOR_SKLEARN_ROUTER, _ANGKOR_ADAPTIVE_THETA
+    global _ANGKOR_PHANTOM_RUNNER, _ANGKOR_VERIFIER
+    if not _has_ui_context():
+        return
+    ss = st.session_state
+    if not ss.get("angkor_session_bootstrapped"):
+        ss.angkor_session_bootstrapped = True
+        ss.angkor_cache = None
+        ss.angkor_cache_initialized = False
+        ss.angkor_cache_initializing = False
+        try:
+            from sklearn.linear_model import LogisticRegression  # noqa: F401
+            ss.angkor_sklearn_router = SklearnRouter()
+        except ImportError:
+            ss.angkor_sklearn_router = None
+        ss.angkor_adaptive_theta = AdaptiveThreshold()
+        ss.angkor_phantom_runner = SpeculativeRunner()
+        ss.angkor_verifier = CascadeVerifier()
+    _ANGKOR_SKLEARN_ROUTER = ss.get("angkor_sklearn_router")
+    _ANGKOR_ADAPTIVE_THETA = ss.get("angkor_adaptive_theta")
+    _ANGKOR_PHANTOM_RUNNER = ss.get("angkor_phantom_runner")
+    _ANGKOR_VERIFIER = ss.get("angkor_verifier")
+    _ANGKOR_CACHE = ss.get("angkor_cache")
+
+
 def init_session_state() -> None:
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -2635,6 +3098,93 @@ def init_session_state() -> None:
         st.session_state.attached_txt_bytes = None
     if "attached_txt_name" not in st.session_state:
         st.session_state.attached_txt_name = ""
+    if "_pending_chat" not in st.session_state:
+        st.session_state._pending_chat = None
+
+
+def _render_orchestration_caption(result: RouteResult) -> None:
+    orch = result.diagnostics.get("orchestration")
+    if isinstance(orch, dict):
+        ptype = orch.get("prompt_type")
+        if ptype == "DIRECT_ANSWER":
+            st.caption("🎯 Direct answer — single agent, no decomposition.")
+        elif ptype == "REMOTE_ESCALATE":
+            st.caption("☁️ Cloud escalation — single remote agent.")
+        elif orch.get("decomposition_used"):
+            st.caption(f"🔀 Decomposed into {orch.get('num_agents', 1)} sub-agents.")
+    elif result.prompt_type == "DIRECT_ANSWER":
+        st.caption("🎯 Direct answer — single agent, no decomposition.")
+    elif result.prompt_type == "REMOTE_ESCALATE":
+        st.caption("☁️ Cloud escalation — single remote agent.")
+    elif result.decomposition_used:
+        st.caption(f"🔀 Decomposed into {result.num_agents} sub-agents.")
+
+
+def _handle_pending_chat(
+    *,
+    threshold: int,
+    api_key: str,
+    active_local_model: str,
+    active_remote_model: str,
+) -> None:
+    """
+    Second-phase chat handler: user message is already in history; show lightweight
+    feedback immediately (no st.spinner dimming), then dispatch.
+    """
+    pending = st.session_state.pop("_pending_chat", None)
+    if not pending:
+        return
+
+    prompt = str(pending["prompt"])
+    full_prompt = str(pending["full_prompt"])
+    has_txt_context = bool(pending.get("has_txt_context"))
+    instant = bool(pending.get("instant"))
+    image_bytes = pending.get("image_bytes")
+    image_file: BinaryIO | None = None
+    if image_bytes:
+        image_file = io.BytesIO(image_bytes)
+
+    timing = RequestTiming()
+    timing.mark("input_received")
+
+    with st.chat_message("assistant"):
+        status_slot = st.empty()
+        if instant:
+            status_slot.caption("⚡ Instant reply")
+        else:
+            status_slot.markdown("_Routing…_")
+        timing.mark("ui_feedback_shown")
+
+        if instant:
+            result = dispatch_instant_trivial(
+                prompt,
+                threshold,
+                active_local_model,
+                active_remote_model,
+                timing=timing,
+            )
+        else:
+            result = run_request_nonblocking(
+                process_user_request,
+                full_prompt,
+                threshold,
+                api_key,
+                active_local_model,
+                active_remote_model,
+                image_file=image_file,
+                has_txt_context=has_txt_context,
+                timing=timing,
+            )
+
+        status_slot.empty()
+        _render_orchestration_caption(result)
+        assistant_message = {
+            "role": "assistant",
+            "content": result.answer,
+            "result": result,
+        }
+        render_assistant_message(assistant_message)
+        st.session_state.messages.append(assistant_message)
 
 
 def run_request_nonblocking(fn, *args, **kwargs) -> RouteResult:
@@ -2675,30 +3225,8 @@ def main() -> None:
 
     init_session_state()
 
-    # -- ANGKOR + PHANTOM lazy initialization --------------------------------
-    global _ANGKOR_CACHE, _ANGKOR_SKLEARN_ROUTER, _ANGKOR_ADAPTIVE_THETA
-    global _ANGKOR_PHANTOM_RUNNER, _ANGKOR_VERIFIER
-
-    if _ANGKOR_CACHE is None:
-        cache = SemanticCache()
-        if cache.initialize():
-            _ANGKOR_CACHE = cache
-
-    if _ANGKOR_SKLEARN_ROUTER is None:
-        try:
-            from sklearn.linear_model import LogisticRegression
-            _ANGKOR_SKLEARN_ROUTER = SklearnRouter()
-        except ImportError:
-            pass
-
-    if _ANGKOR_ADAPTIVE_THETA is None:
-        _ANGKOR_ADAPTIVE_THETA = AdaptiveThreshold()
-
-    if _ANGKOR_PHANTOM_RUNNER is None:
-        _ANGKOR_PHANTOM_RUNNER = SpeculativeRunner()
-
-    if _ANGKOR_VERIFIER is None:
-        _ANGKOR_VERIFIER = CascadeVerifier()
+    # -- ANGKOR + PHANTOM session-persistent singletons (survive Streamlit reruns) --
+    _bootstrap_angkor_session()
 
     with st.sidebar:
         st.header("⚙️ ANGKOR + PHANTOM Configuration")
@@ -2815,14 +3343,14 @@ def main() -> None:
             st.session_state.attached_txt_bytes = None
             st.session_state.attached_txt_name = ""
 
-    # Local-backend health banner
-    local_healthy = check_local_health(active_local_model)
-    if not local_healthy:
+    # Local-backend health banner (non-blocking — never stall the UI on Ollama probe)
+    local_health = get_local_health_for_ui(active_local_model)
+    if local_health is False:
         st.warning(
             f"⚠️ Local utility model `{active_local_model}` is **unavailable**. "
             "Greetings use canned replies; other prompts may route remote."
         )
-    else:
+    elif local_health is True:
         mem_usage = get_memory_usage()
         if mem_usage is not None and mem_usage >= MEMORY_PRESSURE_THRESHOLD:
             st.warning(
@@ -2838,6 +3366,13 @@ def main() -> None:
                 st.markdown(message["content"])
                 if message.get("image_preview"):
                     st.image(message["image_preview"], width=200)
+
+    _handle_pending_chat(
+        threshold=DEFAULT_COMPLEXITY_THRESHOLD,
+        api_key=api_key,
+        active_local_model=active_local_model,
+        active_remote_model=active_remote_model,
+    )
 
     threshold = DEFAULT_COMPLEXITY_THRESHOLD
 
@@ -2859,73 +3394,18 @@ def main() -> None:
             "txt_attached": has_txt_context,
         }
         st.session_state.messages.append(user_message)
-
-        with st.chat_message("user"):
-            st.markdown(user_content)
-            if uploaded_image is not None:
-                st.image(uploaded_image, width=200)
-
-        with st.chat_message("assistant"):
-            plan = plan_request(
-                full_prompt,
-                threshold,
-                active_local_model,
-                active_remote_model,
-            )
-            clf = plan.classification
-            if clf.prompt_type == "DIRECT_ANSWER":
-                st.caption("🎯 Direct answer — single agent, no decomposition.")
-            elif clf.prompt_type == "REMOTE_ESCALATE":
-                st.caption("☁️ Cloud escalation — single remote agent.")
-            elif clf.decomposition_used:
-                st.caption(f"🔀 Decomposed into {clf.num_agents} sub-agents.")
-
-            use_swarm = (
-                clf.decomposition_used
-                and clf.num_agents > 1
-                and not plan.single_route
-                and len(plan.tasks) > 1
-            )
-
-            if use_swarm:
-                with st.status("Spawning Agent Swarm...", expanded=True) as status:
-                    status.write(f"Decomposed into **{len(plan.tasks)}** parallel sub-agents.")
-                    for index, task in enumerate(plan.tasks, start=1):
-                        preview = f"{task[:80]}{'…' if len(task) > 80 else ''}"
-                        status.write(f"• Sub-agent {index}: {preview}")
-                    result = run_request_nonblocking(
-                        execute_agent_swarm,
-                        plan.tasks,
-                        threshold,
-                        api_key,
-                        active_local_model,
-                        active_remote_model,
-                    )
-                    result = _attach_orchestration(result, clf)
-                    result.decomposition_used = True
-                    result.num_agents = len(plan.tasks)
-                    status.update(label="Agent Swarm complete", state="complete")
-            else:
-                with st.spinner("Routing..."):
-                    result = run_request_nonblocking(
-                        process_user_request,
-                        full_prompt,
-                        threshold,
-                        api_key,
-                        active_local_model,
-                        active_remote_model,
-                        image_file=uploaded_image,
-                        has_txt_context=has_txt_context,
-                    )
-                    result = _attach_orchestration(result, clf)
-
-            assistant_message = {
-                "role": "assistant",
-                "content": result.answer,
-                "result": result,
-            }
-            render_assistant_message(assistant_message)
-            st.session_state.messages.append(assistant_message)
+        st.session_state._pending_chat = {
+            "prompt": prompt,
+            "full_prompt": full_prompt,
+            "has_txt_context": has_txt_context,
+            "instant": is_trivial_fast_path(
+                prompt,
+                has_image=uploaded_image is not None,
+                has_txt_context=has_txt_context,
+            ),
+            "image_bytes": uploaded_image.getvalue() if uploaded_image else None,
+        }
+        st.rerun()
 
 
 if __name__ == "__main__":
