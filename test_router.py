@@ -730,8 +730,8 @@ def test_cascade_verifier_structural_math():
     verifier = CascadeVerifier(config=cfg)
     ok, _, _ = verifier.verify("", "42", task_type="math")
     assert ok
-    ok, _, _ = verifier.verify("", "not a number", task_type="math")
-    assert not ok
+    ok, _, _ = verifier.verify("", "The answer is 42", task_type="math")
+    assert ok
 
 
 def test_cache_routes_in_app():

@@ -20,6 +20,7 @@ import streamlit as st
 from PIL import Image
 
 from my_routing_agent.cache.semantic_cache import SemanticCache
+from my_routing_agent.middleware.compressor import ResponseCompressor
 from my_routing_agent.middleware.entropy import compute_shannon_entropy, normalize_entropy
 from my_routing_agent.routers.engine import (
     AdaptiveThreshold,
@@ -40,6 +41,7 @@ _ANGKOR_SKLEARN_ROUTER: SklearnRouter | None = None
 _ANGKOR_ADAPTIVE_THETA: AdaptiveThreshold | None = None
 _ANGKOR_PHANTOM_RUNNER: SpeculativeRunner | None = None
 _ANGKOR_VERIFIER: CascadeVerifier | None = None
+_ANGKOR_SHRINK_RAY: ResponseCompressor | None = None
 if not logger.handlers:
     logging.basicConfig(
         level=logging.INFO,
@@ -80,9 +82,9 @@ CANNED_REPLY_REASON = "local-allowed:canned"
 LOCAL_MATH_REASON = "local-allowed:math-python"
 LONG_PROMPT_CHARS = 180
 MAX_TXT_CONTEXT_CHARS = 4000
-REMOTE_MAX_TOKENS_GREETING = 32
-REMOTE_MAX_TOKENS_SIMPLE = 64
-REMOTE_MAX_TOKENS_DEFAULT = 512
+REMOTE_MAX_TOKENS_GREETING = 128
+REMOTE_MAX_TOKENS_SIMPLE = 256
+REMOTE_MAX_TOKENS_DEFAULT = 1024
 REMOTE_UI_TIMEOUT_SECONDS = 120
 INSTANT_GREETING_MS_BUDGET = 200  # UI must show feedback within this window for greetings
 ROOT_DIR = Path(__file__).resolve().parent
@@ -266,9 +268,9 @@ COMPLEXITY_KEYWORDS = (
 
 # Goldilocks guardrails: concise answers, permit how-to/general knowledge,
 # deny only factual impossibilities and logical contradictions.
-SUB_AGENT_SYSTEM_PROMPT = """You are a concise, direct answering agent.
+SUB_AGENT_SYSTEM_PROMPT = """You are a helpful, accurate, and thorough assistant.
 Rules:
-1. Provide the direct answer. No greetings, no fluff.
+1. Answer the user's question directly and completely. A complete answer is better than a short one.
 2. "How-to" instructions, general knowledge, facts, and open-ended factual
    requests (e.g. "an amazing thing about X", "a fact about Y") are ALL valid.
    Answer them neutrally and directly with a real fact.
@@ -2187,8 +2189,23 @@ def _cache_lookup(prompt: str) -> RouteResult | None:
     )
 
 
+def _shrink_response(result: RouteResult) -> None:
+    """Apply Shrink Ray response compression to any non-trivial result."""
+    global _ANGKOR_SHRINK_RAY
+    if result.route in ("MATH_PYTHON", "CACHE_HIT") or result.diagnostics.get("instant_greeting") or result.diagnostics.get("instant_trivial"):
+        return
+    if _ANGKOR_SHRINK_RAY is None:
+        _ANGKOR_SHRINK_RAY = ResponseCompressor()
+    compressed, pre_tokens, savings = _ANGKOR_SHRINK_RAY.compress(result.answer)
+    if savings > 0:
+        result.answer = compressed
+        result.tokens = max(0, result.tokens - savings)
+        result.diagnostics["shrink_ray_savings"] = savings
+
+
 def _cache_store(prompt: str, result: RouteResult) -> None:
     global _ANGKOR_CACHE
+    _shrink_response(result)
     cache = _lazy_init_angkor_cache()
     if cache is None:
         return
@@ -2399,7 +2416,7 @@ def _route_vision(
                 ],
             },
         ],
-        "max_tokens": 100,
+        "max_tokens": 300,
     }
 
     try:
@@ -2461,7 +2478,7 @@ def _route_text_local(
             "prompt": prompt,
             "system": SUB_AGENT_SYSTEM_PROMPT,
             "stream": False,
-            "options": {"temperature": 0.0, "num_predict": 128},
+            "options": {"temperature": 0.0, "num_predict": 512},
         }
         try:
             # (connect, read) timeout: read bounds total generation wait for stream=False.
