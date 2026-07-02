@@ -728,10 +728,56 @@ def test_cascade_verifier_structural_math():
     from my_routing_agent.config import VerifierConfig
     cfg = VerifierConfig(coherence_threshold=0.0)
     verifier = CascadeVerifier(config=cfg)
+
+    # Plain numeric answer
+    ok, _, _ = verifier.verify("What is 2 + 2?", "4", task_type="math")
+    assert ok
+
+    # Answer with explanation text
+    ok, _, _ = verifier.verify("What is 25 × 4?", "The answer is 100.", task_type="math")
+    assert ok
+
+    # Answer with explanation before/after
+    ok, _, _ = verifier.verify("What is 25 × 4?", "100 because 25 × 4 = 100.", task_type="math")
+    assert ok
+
+    # Answer with surrounding text
+    ok, _, _ = verifier.verify("What is 25 × 4?", "After calculating, we get 100.", task_type="math")
+    assert ok
+
+    # Negative number
+    ok, _, _ = verifier.verify("What is -5 + 3?", "-2", task_type="math")
+    assert ok
+
+    # Decimal number
+    ok, _, _ = verifier.verify("What is 3.14 + 1?", "4.14", task_type="math")
+    assert ok
+
+    # Incorrect numeric answer (expected 4, got 5)
+    ok, _, _ = verifier.verify("What is 2 + 2?", "5", task_type="math")
+    assert not ok
+
+    # Response with no numeric value at all
+    ok, _, _ = verifier.verify("What is 2 + 2?", "I don't know", task_type="math")
+    assert not ok
+
+    # Empty output
+    ok, _, _ = verifier.verify("What is 2 + 2?", "", task_type="math")
+    assert not ok
+
+    # Negative decimal
+    ok, _, _ = verifier.verify("What is -3.5 + -1.5?", "-5.0", task_type="math")
+    assert ok
+
+    # Plain number without query (fallback: no expected answer, just checks number exists)
     ok, _, _ = verifier.verify("", "42", task_type="math")
     assert ok
     ok, _, _ = verifier.verify("", "not a number", task_type="math")
     assert not ok
+
+    # Ensure non-math task_types are unaffected
+    ok, _, _ = verifier.verify("", '{"answer": "test"}', task_type="json")
+    assert ok
 
 
 def test_cache_routes_in_app():

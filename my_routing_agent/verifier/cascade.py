@@ -9,6 +9,7 @@ import re
 from typing import Any, Callable
 
 from my_routing_agent.config import VerifierConfig
+from my_routing_agent.utils.math_eval import try_evaluate_math
 
 logger = logging.getLogger("cascade_verifier")
 
@@ -71,7 +72,12 @@ class CascadeVerifier:
         if not output or not output.strip():
             return False, output, False
 
-        if not self._structural_validate(task_type, output):
+        # For math tasks, try to compute the expected answer from the query
+        expected_answer: str | None = None
+        if task_type == "math" and query.strip():
+            expected_answer = try_evaluate_math(query)
+
+        if not self._structural_validate(task_type, output, expected_answer):
             logger.info("CASCADE: structural validation failed (type=%s)", task_type)
             if remote_escalate_fn:
                 return self._escalate(query, output, remote_escalate_fn)
@@ -88,7 +94,18 @@ class CascadeVerifier:
         logger.info("CASCADE: output accepted (type=%s)", task_type)
         return True, output, False
 
-    def _structural_validate(self, task_type: str, output: str) -> bool:
+    @staticmethod
+    def _extract_numbers(text: str) -> list[float]:
+        """Extract all integers and decimal numbers (including negative) from text."""
+        matches = re.findall(r"-?\d+(?:\.\d+)?", text)
+        return [float(m) for m in matches if m not in ("-", ".")]
+
+    def _structural_validate(
+        self,
+        task_type: str,
+        output: str,
+        expected_answer: str | None = None,
+    ) -> bool:
         if task_type == "json":
             try:
                 json.loads(output)
@@ -106,7 +123,16 @@ class CascadeVerifier:
         if task_type == "qa":
             return len(output.split()) > 2
         if task_type == "math":
-            return bool(re.match(r"^-?\d+(\.\d+)?$", output.strip()))
+            nums = self._extract_numbers(output)
+            if not nums:
+                return False
+            if expected_answer is not None:
+                try:
+                    expected = float(expected_answer)
+                    return any(abs(n - expected) < 1e-9 for n in nums)
+                except (ValueError, TypeError):
+                    return False
+            return True
         return len(output.strip()) > 0
 
     def _semantic_coherent(self, query: str, output: str, encoder: Any | None = None) -> bool:
