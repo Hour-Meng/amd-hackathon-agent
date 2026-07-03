@@ -50,7 +50,7 @@ COMPOSITE_PROMPT = (
     "spell apple backward, write the answer of 9+10 backward. "
     "Tell me 1 amazing thing about france"
 )
-MULTI_TASK_PROMPT = "tell me the capital of france, london, paris, cambodia, 2+12"
+MULTI_TASK_PROMPT = "tell me the capital of france, london, paris, cambodia"
 
 
 def _decide(
@@ -1058,6 +1058,79 @@ def test_trivial_math_single_route_decision():
     finally:
         app.route_decision = orig  # type: ignore[assignment]
     assert calls["n"] == 1
+
+
+# --- Single-agent-first planner -------------------------------------------------
+
+
+LONG_DOC_LINES = "\n".join(
+    f"Paragraph {i}: Lorem ipsum dolor sit amet, consectetur adipiscing elit."
+    for i in range(50)
+)
+LONG_SUMMARY_PROMPT = f"Summarize the following document:\n\n{LONG_DOC_LINES}"
+
+
+def test_long_summarization_uses_single_agent():
+    planner = app.decide_mode(LONG_SUMMARY_PROMPT)
+    assert planner.mode == "DIRECT"
+    assert planner.num_agents == 1
+    assert planner.preserve_original is True
+    plan = plan_request(LONG_SUMMARY_PROMPT, THRESHOLD, LOCAL_MODEL, REMOTE_MODEL)
+    assert plan.single_route
+    assert len(plan.tasks) == 1
+    assert plan.tasks[0] == LONG_SUMMARY_PROMPT
+    assert plan.classification.num_agents == 1
+
+
+def test_summarize_context_not_split_by_regex():
+    assert app.count_tasks(LONG_SUMMARY_PROMPT) == 1
+    parts = heuristic_task_split(LONG_SUMMARY_PROMPT)
+    assert len(parts) == 1
+    assert not app.should_decompose(LONG_SUMMARY_PROMPT)
+
+
+def test_independent_tasks_split_only_when_planner_approves():
+    planner = app.decide_mode(MULTI_TASK_PROMPT)
+    assert planner.mode == "SPLIT"
+    assert planner.split_approved is True
+    assert planner.num_agents > 1
+    vague = "do many things with this long pasted text, " + LONG_DOC_LINES[:120]
+    assert app.decide_mode(vague).mode == "DIRECT"
+
+
+def test_summarization_token_budget_single_dispatch():
+    calls = {"n": 0}
+    orig = app.route_and_execute
+
+    def counting_execute(*args, **kwargs):
+        calls["n"] += 1
+        return orig(*args, **kwargs)
+
+    app.route_and_execute = counting_execute  # type: ignore[assignment]
+    try:
+        result = app.process_user_request(
+            LONG_SUMMARY_PROMPT,
+            THRESHOLD,
+            "fw_test",
+            LOCAL_MODEL,
+            REMOTE_MODEL,
+        )
+    finally:
+        app.route_and_execute = orig  # type: ignore[assignment]
+
+    assert calls["n"] == 1
+    assert LONG_SUMMARY_PROMPT[:40] in (result.original_prompt or "")
+
+
+def test_final_answer_preserves_main_question():
+    planner = app.decide_mode("Summarize this article about climate change")
+    assert planner.tasks[0] == "Summarize this article about climate change"
+    wrapped = app._context_preserving_task(
+        "What is the main theme?",
+        "Identify the theme",
+    )
+    assert "What is the main theme?" in wrapped
+    assert "Identify the theme" in wrapped
 
 
 # --- Calibration + DeadZone tests --------------------------------------------

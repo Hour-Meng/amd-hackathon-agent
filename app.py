@@ -80,6 +80,9 @@ CANNED_REPLY_REASON = "local-allowed:canned"
 LOCAL_MATH_REASON = "local-allowed:math-python"
 LONG_PROMPT_CHARS = 180
 MAX_TXT_CONTEXT_CHARS = 4000
+DEFAULT_MAX_SUB_AGENTS = 1
+HARD_MAX_SUB_AGENTS = 4
+LONG_CONTEXT_LINE_THRESHOLD = 12
 REMOTE_MAX_TOKENS_GREETING = 32
 REMOTE_MAX_TOKENS_SIMPLE = 64
 REMOTE_MAX_TOKENS_DEFAULT = 512
@@ -1123,20 +1126,234 @@ _HEURISTIC_SPLIT = re.compile(
     re.IGNORECASE,
 )
 
+SUMMARY_SYNTHESIS_PATTERNS = (
+    "summarize",
+    "summarise",
+    "summary",
+    "tl;dr",
+    "tldr",
+    "synthesis",
+    "synthesize",
+    "synthesise",
+    "explain this",
+    "overview of",
+    "key points",
+    "main points",
+    "in brief",
+    "condense",
+    "recap",
+    "digest",
+    "what does this document",
+    "what does this text",
+)
 
-def heuristic_task_split(prompt: str) -> list[str]:
-    """Heuristic task split without any local LLM planner call."""
+LOOP_TASK_PATTERNS = (
+    "each section",
+    "each paragraph",
+    "step by step through",
+    "iterate over",
+    "go through each",
+)
+
+PlannerMode = Literal["DIRECT", "LOOP", "SPLIT"]
+
+
+@dataclass
+class PlannerDecision:
+    """Single-agent-first planner output — one read of the full prompt."""
+
+    mode: PlannerMode
+    num_agents: int
+    tasks: list[str]
+    reason: str
+    preserve_original: bool
+    confidence: float
+    split_approved: bool = False
+
+
+def is_synthesis_or_summary_task(prompt: str) -> bool:
+    lowered = prompt.lower()
+    return any(pattern in lowered for pattern in SUMMARY_SYNTHESIS_PATTERNS)
+
+
+def is_long_context_prompt(prompt: str) -> bool:
+    stripped = prompt.strip()
+    if len(stripped) > LONG_PROMPT_CHARS:
+        return True
+    lines = [ln for ln in stripped.splitlines() if ln.strip()]
+    if len(lines) >= LONG_CONTEXT_LINE_THRESHOLD:
+        return True
+    if "[Attached context from file]" in prompt:
+        return True
+    return False
+
+
+def is_iterative_long_task(prompt: str) -> bool:
+    lowered = prompt.lower()
+    return is_long_context_prompt(prompt) and any(p in lowered for p in LOOP_TASK_PATTERNS)
+
+
+def _context_preserving_task(original_prompt: str, subtask: str) -> str:
+    """Wrap a sub-task with the full original question so agents never lose context."""
+    return (
+        "[Original user request — preserve this context]\n"
+        f"{original_prompt.strip()}\n\n"
+        "[Sub-task to answer now]\n"
+        f"{subtask.strip()}"
+    )
+
+
+_TASK_START_KEYWORDS = frozenset(
+    {
+        "what", "who", "where", "when", "why", "how", "tell", "spell", "write",
+        "list", "give", "find", "name", "capital", "population", "explain",
+        "count", "reverse", "calculate", "summarize", "describe", "compute",
+    }
+)
+
+
+def _starts_with_task_keyword(segment: str) -> bool:
+    tokens = segment.strip().split()
+    if not tokens:
+        return False
+    return tokens[0].lower().strip(",.?!:;'\"") in _TASK_START_KEYWORDS
+
+
+def split_independent_tasks(prompt: str) -> list[str]:
+    """
+    Conservative splitter — only for short, explicitly multi-query prompts.
+    Never splits long pasted documents or summarization context by commas/lines.
+    """
     cleaned = prompt.strip()
     if not cleaned:
         return [cleaned]
+    if is_long_context_prompt(cleaned) or is_synthesis_or_summary_task(cleaned):
+        return [cleaned]
+    if len(cleaned) > 200:
+        return [cleaned]
+
     parts = [part.strip() for part in _HEURISTIC_SPLIT.split(cleaned) if part.strip()]
-    if len(parts) > 1:
+    if len(parts) >= 2 and len(parts) <= HARD_MAX_SUB_AGENTS:
         return parts
-    if cleaned.count(",") >= 2 and len(cleaned) > 40:
-        parts = [part.strip() for part in cleaned.split(",") if part.strip()]
-        if len(parts) > 1:
-            return parts
+
+    if cleaned.count(",") >= 2:
+        comma_parts = [part.strip() for part in cleaned.split(",") if part.strip()]
+        if 2 <= len(comma_parts) <= HARD_MAX_SUB_AGENTS:
+            capital_match = re.match(
+                r"^(tell me the capital of)\s+(.+)$",
+                comma_parts[0],
+                re.IGNORECASE,
+            )
+            if capital_match:
+                prefix = capital_match.group(1)
+                expanded = [comma_parts[0]]
+                for tail in comma_parts[1:]:
+                    if would_math_intercept(tail):
+                        expanded.append(tail)
+                    else:
+                        expanded.append(f"{prefix} {tail}")
+                if len(expanded) >= 2:
+                    return expanded[:HARD_MAX_SUB_AGENTS]
+            query_like = sum(
+                1
+                for part in comma_parts
+                if _starts_with_task_keyword(part)
+                or would_math_intercept(part)
+                or (len(part) <= 24 and part[0].isalpha())
+            )
+            if query_like >= 2 and query_like == len(comma_parts):
+                return comma_parts
+
     return [cleaned]
+
+
+def heuristic_task_split(prompt: str) -> list[str]:
+    """Backward-compatible alias — delegates to the conservative splitter."""
+    return split_independent_tasks(prompt)
+
+
+def should_decompose(prompt: str) -> bool:
+    """
+    True only when subtasks are clearly independent, short, and self-contained.
+    Fail closed to single-agent for summaries, long context, and uncertain cases.
+    """
+    if is_synthesis_or_summary_task(prompt):
+        return False
+    if is_long_context_prompt(prompt):
+        return False
+    if is_direct_answer_prompt(prompt):
+        return False
+    if is_character_level_task(prompt):
+        return False
+    if len(prompt.strip()) > 200:
+        return False
+
+    parts = split_independent_tasks(prompt)
+    if len(parts) < 2 or len(parts) > HARD_MAX_SUB_AGENTS:
+        return False
+
+    substantial = [
+        part
+        for part in parts
+        if len(part) > 4 and not is_local_trivial_whitelisted(part)
+    ]
+    if len(substantial) < 2:
+        return False
+
+    independent = sum(
+        1
+        for part in substantial
+        if _starts_with_task_keyword(part) or would_math_intercept(part)
+    )
+    return independent >= 2
+
+
+def decide_mode(prompt: str) -> PlannerDecision:
+    """
+    Pre-classifier reader: inspect the full prompt once and choose DIRECT, LOOP, or SPLIT.
+    Fail closed to single-agent when uncertain.
+    """
+    cleaned = prompt.strip()
+    if not cleaned:
+        return PlannerDecision("DIRECT", 1, [cleaned], "empty", True, 1.0)
+
+    if is_synthesis_or_summary_task(cleaned):
+        return PlannerDecision(
+            "DIRECT", 1, [cleaned], "summary:single_agent", True, 0.98,
+        )
+
+    if is_iterative_long_task(cleaned):
+        return PlannerDecision(
+            "LOOP", 1, [cleaned], "long_context:iterative_single_agent", True, 0.85,
+        )
+
+    if is_long_context_prompt(cleaned):
+        return PlannerDecision(
+            "DIRECT", 1, [cleaned], "long_context:preserve", True, 0.90,
+        )
+
+    if is_direct_answer_prompt(cleaned) or is_character_level_task(cleaned):
+        return PlannerDecision(
+            "DIRECT", 1, [cleaned], "direct_answer", True, 0.95,
+        )
+
+    if should_decompose(cleaned):
+        raw_parts = split_independent_tasks(cleaned)[:HARD_MAX_SUB_AGENTS]
+        if len(raw_parts) >= 2:
+            wrapped = [_context_preserving_task(cleaned, part) for part in raw_parts]
+            return PlannerDecision(
+                "SPLIT",
+                len(wrapped),
+                wrapped,
+                "split:explicit_independent_tasks",
+                True,
+                0.82,
+                split_approved=True,
+            )
+
+    return PlannerDecision(
+        "DIRECT", 1, [cleaned], "uncertain:single_agent", True, 0.75,
+    )
 
 
 SINGLE_TURN_MAX_CHARS = 120
@@ -1151,9 +1368,15 @@ def is_direct_answer_prompt(prompt: str) -> bool:
     stripped = prompt.strip()
     if not stripped:
         return True
-    # Multi-segment comma lists are never single-turn direct answers.
-    if stripped.count(",") >= 2 and len(stripped) > 35:
-        return False
+    parts = split_independent_tasks(stripped)
+    if len(parts) >= 2:
+        independent = sum(
+            1
+            for part in parts
+            if _starts_with_task_keyword(part) or would_math_intercept(part)
+        )
+        if independent >= 2:
+            return False
     if is_local_trivial_whitelisted(stripped):
         return True
     if is_simple_format_task(stripped):
@@ -1170,25 +1393,8 @@ def is_direct_answer_prompt(prompt: str) -> bool:
 
 
 def is_beneficial_to_decompose(prompt: str) -> bool:
-    """True only when multiple independent substantial tasks justify a swarm."""
-    if is_direct_answer_prompt(prompt):
-        return False
-    if is_character_level_task(prompt):
-        return False
-    parts = heuristic_task_split(prompt)
-    if len(parts) < 2:
-        return False
-    substantial = [
-        part
-        for part in parts
-        if len(part) > 8 and not is_local_trivial_whitelisted(part)
-    ]
-    if len(substantial) >= 2:
-        return True
-    # Comma-list prompts with 3+ segments are multi-task even when segments are short.
-    if len(parts) >= 3 and prompt.count(",") >= 2 and len(prompt) > 35:
-        return True
-    return False
+    """Backward-compatible alias for the conservative decomposition gate."""
+    return should_decompose(prompt)
 
 
 @dataclass
@@ -1203,6 +1409,11 @@ class ClassificationResult:
     escalation_reason: str | None = None
     decomposition_used: bool = False
     num_agents: int = 1
+    planner_mode: PlannerMode = "DIRECT"
+    planner_reason: str = ""
+    original_prompt_intact: bool = True
+    split_approved: bool = False
+    planned_tasks: list[str] = field(default_factory=list)
 
 
 def classify_prompt(
@@ -1214,11 +1425,10 @@ def classify_prompt(
     has_image: bool = False,
 ) -> ClassificationResult:
     """
-    Hierarchical level-1 reader/classifier (rule-based, no LLM).
-
-    Decides DIRECT_ANSWER | LOCAL_DECOMPOSE | REMOTE_ESCALATE on the WHOLE prompt
-    before any decomposition or model call.
+    Pre-classifier reader: reads the full prompt once via decide_mode(), then maps
+    to execution types. SPLIT is only used when the planner explicitly approves.
     """
+    planner = decide_mode(prompt)
     local_unavailable = not has_image and is_local_unavailable(active_local_model)
     decision = route_decision(
         prompt,
@@ -1230,6 +1440,13 @@ def classify_prompt(
         memory_pressure=get_memory_usage() if not has_image else None,
     )
 
+    base_fields = {
+        "planner_mode": planner.mode,
+        "planner_reason": planner.reason,
+        "original_prompt_intact": planner.preserve_original,
+        "split_approved": planner.split_approved,
+    }
+
     if has_image:
         return ClassificationResult(
             prompt_type="REMOTE_ESCALATE",
@@ -1239,6 +1456,8 @@ def classify_prompt(
             confidence_score=0.95,
             escalation_reason="vision:remote",
             num_agents=1,
+            planned_tasks=[prompt],
+            **base_fields,
         )
 
     if is_character_level_task(prompt):
@@ -1250,6 +1469,8 @@ def classify_prompt(
             confidence_score=0.99,
             escalation_reason=CHARACTER_LEVEL_GUARD_REASON,
             num_agents=1,
+            planned_tasks=[prompt],
+            **base_fields,
         )
 
     if had_prior_local_failure(prompt):
@@ -1261,9 +1482,52 @@ def classify_prompt(
             confidence_score=0.85,
             escalation_reason=PRIOR_FAILURE_REASON,
             num_agents=1,
+            planned_tasks=[prompt],
+            **base_fields,
         )
 
-    # Direct-answer guard: greetings, small talk, single-sentence questions.
+    if planner.mode == "SPLIT" and planner.split_approved:
+        if any(is_character_level_task(part) for part in planner.tasks):
+            return ClassificationResult(
+                prompt_type="REMOTE_ESCALATE",
+                prompt_label="character_level_subtask",
+                route="REMOTE",
+                reason=CHARACTER_LEVEL_GUARD_REASON,
+                confidence_score=0.99,
+                escalation_reason=CHARACTER_LEVEL_GUARD_REASON,
+                num_agents=1,
+                planned_tasks=[prompt],
+                **base_fields,
+            )
+        return ClassificationResult(
+            prompt_type="LOCAL_DECOMPOSE",
+            prompt_label="multi_task",
+            route=decision.route,
+            reason=planner.reason,
+            confidence_score=planner.confidence,
+            decomposition_used=True,
+            num_agents=min(planner.num_agents, HARD_MAX_SUB_AGENTS),
+            planned_tasks=planner.tasks,
+            **base_fields,
+        )
+
+    if planner.mode == "LOOP":
+        ptype_loop: PromptType = (
+            "REMOTE_ESCALATE" if decision.route == "REMOTE" else "DIRECT_ANSWER"
+        )
+        return ClassificationResult(
+            prompt_type=ptype_loop,
+            prompt_label="loop",
+            route=decision.route,
+            reason=planner.reason,
+            confidence_score=planner.confidence,
+            escalation_reason=decision.reason if decision.route == "REMOTE" else None,
+            decomposition_used=False,
+            num_agents=1,
+            planned_tasks=[prompt],
+            **base_fields,
+        )
+
     if is_direct_answer_prompt(prompt):
         if is_local_trivial_whitelisted(prompt):
             label = "greeting"
@@ -1283,10 +1547,11 @@ def classify_prompt(
             escalation_reason=decision.reason if decision.route == "REMOTE" else None,
             decomposition_used=False,
             num_agents=1,
+            planned_tasks=[prompt],
+            **base_fields,
         )
 
-    # Cloud escalation for hard prompts that do not benefit from splitting.
-    if decision.route == "REMOTE" and not is_beneficial_to_decompose(prompt):
+    if decision.route == "REMOTE":
         return ClassificationResult(
             prompt_type="REMOTE_ESCALATE",
             prompt_label="cloud_escalation",
@@ -1295,39 +1560,21 @@ def classify_prompt(
             confidence_score=decision.confidence_score,
             escalation_reason=decision.reason,
             num_agents=1,
-        )
-
-    # Level-2: decompose only when multiple independent tasks justify it.
-    if is_beneficial_to_decompose(prompt):
-        parts = heuristic_task_split(prompt)
-        if any(is_character_level_task(part) for part in parts):
-            return ClassificationResult(
-                prompt_type="REMOTE_ESCALATE",
-                prompt_label="character_level_subtask",
-                route="REMOTE",
-                reason=CHARACTER_LEVEL_GUARD_REASON,
-                confidence_score=0.99,
-                escalation_reason=CHARACTER_LEVEL_GUARD_REASON,
-                num_agents=1,
-            )
-        return ClassificationResult(
-            prompt_type="LOCAL_DECOMPOSE",
-            prompt_label="multi_task",
-            route=decision.route,
-            reason="decompose:beneficial",
-            confidence_score=decision.confidence_score,
-            decomposition_used=True,
-            num_agents=len(parts),
+            planned_tasks=[prompt],
+            **base_fields,
         )
 
     return ClassificationResult(
-        prompt_type="DIRECT_ANSWER" if decision.route == "LOCAL" else "REMOTE_ESCALATE",
+        prompt_type="DIRECT_ANSWER",
         prompt_label="single_route",
         route=decision.route,
-        reason=decision.reason,
-        confidence_score=decision.confidence_score,
-        escalation_reason=decision.reason if decision.route == "REMOTE" else None,
+        reason=planner.reason,
+        confidence_score=planner.confidence,
+        escalation_reason=None,
+        decomposition_used=False,
         num_agents=1,
+        planned_tasks=[prompt],
+        **base_fields,
     )
 
 
@@ -1340,13 +1587,16 @@ def _log_orchestration(
     preview = prompt.strip().replace("\n", " ")[:60]
     logger.info(
         "ORCHESTRATION route_decision=%s prompt_type=%s prompt_label=%s "
-        "decomposition_used=%s num_agents=%s escalation_reason=%s "
-        "confidence=%.2f latency_ms=%.1f prompt=%r",
+        "planner_mode=%s planner_reason=%s decomposition_used=%s num_agents=%s "
+        "original_prompt_intact=%s escalation_reason=%s confidence=%.2f latency_ms=%.1f prompt=%r",
         classification.route,
         classification.prompt_type,
         classification.prompt_label,
+        classification.planner_mode,
+        classification.planner_reason,
         classification.decomposition_used,
         classification.num_agents,
+        classification.original_prompt_intact,
         classification.escalation_reason,
         classification.confidence_score,
         latency_ms,
@@ -1365,20 +1615,25 @@ def _attach_orchestration(
     result.diagnostics["orchestration"] = {
         "prompt_type": classification.prompt_type,
         "prompt_label": classification.prompt_label,
+        "planner_mode": classification.planner_mode,
+        "planner_reason": classification.planner_reason,
         "decomposition_used": classification.decomposition_used,
         "num_agents": classification.num_agents,
+        "original_prompt_intact": classification.original_prompt_intact,
+        "split_approved": classification.split_approved,
         "escalation_reason": classification.escalation_reason,
+    }
+    result.diagnostics["planner"] = {
+        "mode": classification.planner_mode,
+        "num_agents": classification.num_agents,
+        "reason": classification.planner_reason,
+        "original_prompt_intact": classification.original_prompt_intact,
+        "split_approved": classification.split_approved,
     }
     return result
 
 
 _TASK_BULLET_PATTERN = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+", re.MULTILINE)
-_TASK_SPLIT_PATTERN = re.compile(
-    r",\s*(?=(?:and\s+)?(?:what|who|where|when|why|how|tell|spell|write|list|"
-    r"give|find|name|capital|population|explain|count|reverse|calculate|"
-    r"summarize|describe|compute|then|also|finally|next))",
-    re.IGNORECASE,
-)
 _TASK_ENUM_WORDS = (
     "first",
     "second",
@@ -1391,57 +1646,59 @@ _TASK_ENUM_WORDS = (
     "next",
     "lastly",
 )
-_TASK_START_KEYWORDS = frozenset(
-    {
-        "what", "who", "where", "when", "why", "how", "tell", "spell", "write",
-        "list", "give", "find", "name", "capital", "population", "explain",
-        "count", "reverse", "calculate", "summarize", "describe", "compute",
-    }
-)
-
-
-def _starts_with_task_keyword(segment: str) -> bool:
-    tokens = segment.strip().split()
-    if not tokens:
-        return False
-    return tokens[0].lower().strip(",.?!:;'\"") in _TASK_START_KEYWORDS
 
 
 def count_tasks(text: str) -> int:
     """
-    Count distinct tasks/questions/instructions in a prompt.
+    Count distinct user intents for distillation safety checks.
 
-    Strong structural signals win first (bullets/numbered steps, separate lines,
-    sentence enumerators like "first/second/third", question marks). An inline
-    comma list is only counted as multi-task when it is unambiguous — 3+ items,
-    or every segment begins with an imperative/interrogative keyword — so prose
-    with mid-sentence commas is not mistaken for several tasks. Always >= 1 for
-    non-empty input.
+    Long documents and summarization requests are always one task. Short prompts
+    may count bullets, enumerators, or explicit independent queries — never raw
+    line counts on pasted documents.
     """
     cleaned = (text or "").strip()
     if not cleaned:
         return 0
 
-    strong = [1]
-    strong.append(len(_TASK_BULLET_PATTERN.findall(cleaned)))
-    strong.append(len([line for line in cleaned.splitlines() if line.strip()]))
+    if is_synthesis_or_summary_task(cleaned) or is_long_context_prompt(cleaned):
+        return 1
+
     lowered = cleaned.lower()
-    strong.append(sum(1 for w in _TASK_ENUM_WORDS if re.search(rf"\b{w}\b", lowered)))
+    candidates = [1]
+
+    bullets = len(_TASK_BULLET_PATTERN.findall(cleaned))
+    if bullets >= 2:
+        candidates.append(bullets)
+
     if "?" in cleaned:
-        strong.append(len([seg for seg in cleaned.split("?") if seg.strip()]))
+        qcount = len([seg for seg in cleaned.split("?") if seg.strip()])
+        if qcount >= 2:
+            candidates.append(qcount)
 
-    best = max(strong)
-    if best >= 2:
-        return best
+    enum_count = sum(1 for w in _TASK_ENUM_WORDS if re.search(rf"\b{w}\b", lowered))
+    if enum_count >= 2:
+        candidates.append(enum_count)
 
-    # Fallback: inline comma list, only when unambiguous.
-    segments = [seg for seg in _TASK_SPLIT_PATTERN.split(cleaned) if seg and seg.strip()]
-    if len(segments) >= 3 or (
-        len(segments) >= 2 and all(_starts_with_task_keyword(seg) for seg in segments)
-    ):
-        return len(segments)
+    if should_decompose(cleaned):
+        candidates.append(len(split_independent_tasks(cleaned)))
 
-    return 1
+    parts = split_independent_tasks(cleaned)
+    if len(parts) >= 2:
+        independent = sum(
+            1
+            for part in parts
+            if _starts_with_task_keyword(part) or would_math_intercept(part)
+        )
+        if independent >= 2:
+            candidates.append(len(parts))
+
+    if len(cleaned) <= 200:
+        lines = len([line for line in cleaned.splitlines() if line.strip()])
+        if 2 <= lines <= HARD_MAX_SUB_AGENTS:
+            candidates.append(lines)
+
+    best = max(candidates)
+    return min(best, HARD_MAX_SUB_AGENTS) if best >= 2 else 1
 
 
 def adjust_prompt_for_remote(
@@ -1610,53 +1867,28 @@ def plan_request(
         latency_ms=(time.perf_counter() - started) * 1000.0,
     )
 
-    # Agent-swarm guard: direct answers and escalations are always single-route.
+    # Single-agent default — SPLIT only when planner explicitly approved decomposition.
     if (
-        classification.num_agents == 1
-        or not classification.decomposition_used
-        or classification.prompt_type != "LOCAL_DECOMPOSE"
+        classification.planner_mode == "SPLIT"
+        and classification.split_approved
+        and classification.decomposition_used
+        and classification.num_agents > DEFAULT_MAX_SUB_AGENTS
     ):
-        return SwarmPlan(
-            tasks=[prompt],
-            global_route=classification.route,
-            reason=classification.reason,
-            single_route=True,
-            classification=classification,
-        )
-
-    parts = heuristic_task_split(prompt)
-    if any(is_character_level_task(part) for part in parts):
-        escalated = ClassificationResult(
-            prompt_type="REMOTE_ESCALATE",
-            prompt_label="character_level_subtask",
-            route="REMOTE",
-            reason=CHARACTER_LEVEL_GUARD_REASON,
-            confidence_score=0.99,
-            escalation_reason=CHARACTER_LEVEL_GUARD_REASON,
-            num_agents=1,
-        )
-        return SwarmPlan(
-            tasks=[prompt],
-            global_route="REMOTE",
-            reason=CHARACTER_LEVEL_GUARD_REASON,
-            single_route=True,
-            classification=escalated,
-        )
-
-    if len(parts) <= 1:
-        return SwarmPlan(
-            tasks=[prompt],
-            global_route=classification.route,
-            reason=classification.reason,
-            single_route=True,
-            classification=classification,
-        )
+        tasks = classification.planned_tasks or [prompt]
+        if len(tasks) > 1:
+            return SwarmPlan(
+                tasks=tasks[:HARD_MAX_SUB_AGENTS],
+                global_route=classification.route,
+                reason=classification.reason,
+                single_route=False,
+                classification=classification,
+            )
 
     return SwarmPlan(
-        tasks=parts,
+        tasks=[prompt],
         global_route=classification.route,
         reason=classification.reason,
-        single_route=False,
+        single_route=True,
         classification=classification,
     )
 
@@ -2036,8 +2268,9 @@ def execute_agent_swarm(
     active_remote_model: str,
     *,
     allow_heavy_local: bool = False,
+    original_prompt: str = "",
 ) -> RouteResult:
-    """Run route_and_execute in parallel for each decomposed sub-question."""
+    """Run route_and_execute in parallel for each planner-approved sub-question."""
     swarm_started = time.perf_counter()
     ordered: list[RouteResult | None] = [None] * len(tasks)
 
@@ -2093,12 +2326,16 @@ def execute_agent_swarm(
         answer="\n\n---\n\n".join(sections),
         route="AGENT_SWARM",
         tokens=total_tokens,
-        # Parallel runtime: dominated by the slowest thread, not the sequential sum.
         latency_ms=wall_latency_ms,
-        original_prompt=" | ".join(tasks),
+        original_prompt=original_prompt or " | ".join(tasks),
         fallback_used=any_fallback,
         sub_results=sub_results,
         wall_clock_ms=wall_latency_ms,
+        diagnostics={
+            "swarm_sub_agents": len(tasks),
+            "swarm_tokens_total": total_tokens,
+            "original_prompt_intact": bool(original_prompt),
+        },
     )
 
 
@@ -2345,6 +2582,7 @@ def process_user_request(
     result = execute_agent_swarm(
         plan.tasks, threshold, api_key, active_local_model, active_remote_model,
         allow_heavy_local=allow_heavy_local,
+        original_prompt=prompt,
     )
     result.decomposition_used = True
     result.num_agents = len(plan.tasks)
