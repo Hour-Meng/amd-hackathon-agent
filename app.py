@@ -6,8 +6,10 @@ import base64
 import io
 import json
 import logging
+import os
 import re
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,7 +22,11 @@ import streamlit as st
 from PIL import Image
 
 from my_routing_agent.cache.semantic_cache import SemanticCache
-from my_routing_agent.middleware.entropy import compute_shannon_entropy, normalize_entropy
+from my_routing_agent.middleware.entropy import (
+    compute_char_entropy,
+    compute_shannon_entropy,
+    normalize_entropy,
+)
 from my_routing_agent.routers.engine import (
     AdaptiveThreshold,
     PhantomZone,
@@ -30,6 +36,13 @@ from my_routing_agent.routers.features import FeatureExtractor
 from my_routing_agent.phantom.budget import BudgetEnforcer
 from my_routing_agent.phantom.confidence import ConfidencePredictor
 from my_routing_agent.phantom.speculative import SpeculativeRunner
+from my_routing_agent.utils.math_eval import (
+    extract_arithmetic_expression,
+    is_local_arithmetic,
+    is_prime_check_prompt,
+    is_symbolic_math,
+    try_prime_check,
+)
 from my_routing_agent.verifier.cascade import CascadeVerifier
 
 logger = logging.getLogger("hybrid_router")
@@ -78,14 +91,27 @@ PRIOR_FAILURE_REASON = "remote-required:prior-local-failure"
 LOCAL_GREETING_REASON = "local-allowed:greeting"
 CANNED_REPLY_REASON = "local-allowed:canned"
 LOCAL_MATH_REASON = "local-allowed:math-python"
+REMOTE_SYMBOLIC_MATH_REASON = "remote-required:symbolic-math"
+LOCAL_PRIME_REASON = "local-allowed:prime-check"
+LOCAL_CREATIVE_REASON = "local-allowed:creative"
+ENTROPY_GATE_REASON = "entropy-gate:unclear-input"
 LONG_PROMPT_CHARS = 180
 MAX_TXT_CONTEXT_CHARS = 4000
 DEFAULT_MAX_SUB_AGENTS = 1
 HARD_MAX_SUB_AGENTS = 4
+MIN_SUBTASK_CHARS = int(os.getenv("MIN_SUBTASK_CHARS", "12"))
+MIN_SUBTASK_WORDS = int(os.getenv("MIN_SUBTASK_WORDS", "3"))
+SWARM_MAX_CONCURRENT = int(os.getenv("SWARM_MAX_CONCURRENT", "2"))
 LONG_CONTEXT_LINE_THRESHOLD = 12
 REMOTE_MAX_TOKENS_GREETING = 32
 REMOTE_MAX_TOKENS_SIMPLE = 64
-REMOTE_MAX_TOKENS_DEFAULT = 512
+REMOTE_MAX_TOKENS_DEFAULT = int(os.getenv("FIREWORKS_MAX_TOKENS", "768"))
+REMOTE_MAX_TOKENS_LONG = int(os.getenv("REMOTE_MAX_TOKENS_LONG", "1024"))
+REMOTE_MAX_TOKENS_CAP = int(os.getenv("REMOTE_MAX_TOKENS_CAP", "2048"))
+RATE_LIMIT_MAX_RETRIES = int(os.getenv("RATE_LIMIT_MAX_RETRIES", "3"))
+RATE_LIMIT_BACKOFF_BASE = float(os.getenv("RATE_LIMIT_BACKOFF_BASE", "1.0"))
+ENTROPY_INPUT_GATE_THRESHOLD = float(os.getenv("ENTROPY_INPUT_GATE_THRESHOLD", "3.8"))
+ENTROPY_CHAR_GATE_THRESHOLD = float(os.getenv("ENTROPY_CHAR_GATE_THRESHOLD", "3.9"))
 REMOTE_UI_TIMEOUT_SECONDS = 120
 INSTANT_GREETING_MS_BUDGET = 200  # UI must show feedback within this window for greetings
 ROOT_DIR = Path(__file__).resolve().parent
@@ -109,6 +135,19 @@ CODE_GEN_PATTERNS = (
     "```",
 )
 FORMAT_PATTERNS = ("to uppercase", "to lowercase", "capitalize ")
+CREATIVE_PATTERNS = (
+    "write a poem",
+    "write a story",
+    "write me a poem",
+    "write me a story",
+    "haiku",
+    "limerick",
+    "creative writing",
+    "compose a",
+    "imagine a",
+    "short story",
+    "fictional",
+)
 
 # Defaults / catalogs surfaced in the sidebar.
 # Local model is a lightweight utility (greetings/math/format only) — NOT the default generator.
@@ -249,9 +288,7 @@ RouteName = Literal[
     "PHANTOM_RACE",
 ]
 
-MATH_EXTRACT_PATTERN = re.compile(r"([\d\s\+\-\*\/\(\)\.]{3,})")
-MATH_OPERATOR_PATTERN = re.compile(r"[\+\-\*\/]")
-MATH_PREFIX_PATTERN = re.compile(r"^math:\s*", re.IGNORECASE)
+_INVALID_SUBTASK_PATTERN = re.compile(r"^[\d\]\[\)\(]+$")
 
 # Feature-weighted complexity scoring.
 COMPLEXITY_BASE_SCORE = 1
@@ -280,6 +317,8 @@ Rules:
    judge the premise of a normal factual question.
 4. ONLY output an "Error:" if the premise is factually impossible or a logical
    contradiction (e.g. asking for the capital of a city).
+5. For creative tasks, output ONLY the final creative text — no reasoning,
+   steps, scratchpad, or meta-commentary.
 
 Examples:
 Task: capital of France -> Paris.
@@ -426,8 +465,9 @@ class RequestTiming:
 
 
 def _render_key(prefix: str, result: RouteResult, suffix: str = "") -> str:
-    """Unique Streamlit key for telemetry widgets."""
-    return f"{prefix}_{id(result)}_{suffix}".rstrip("_")
+    """Unique Streamlit key for telemetry widgets (stable per chat message)."""
+    mid = result.message_id or str(id(result))
+    return f"{prefix}_{mid}_{suffix}".rstrip("_")
 
 
 def _has_ui_context() -> bool:
@@ -655,8 +695,15 @@ def is_simple_format_task(prompt: str) -> bool:
     )
 
 
+def is_creative_prompt(prompt: str) -> bool:
+    lowered = prompt.lower()
+    return any(pattern in lowered for pattern in CREATIVE_PATTERNS)
+
+
 def is_multi_hop_prompt(prompt: str) -> bool:
     """Multi-part or analytical prompts that need remote reasoning."""
+    if is_symbolic_math(prompt) or is_local_arithmetic(prompt):
+        return False
     lowered = prompt.lower()
     if lowered.count("?") > 1:
         return True
@@ -669,16 +716,116 @@ def is_multi_hop_prompt(prompt: str) -> bool:
     return any(keyword in lowered for keyword in COMPLEXITY_KEYWORDS)
 
 
+def should_entropy_gate_input(prompt: str, *, threshold: float | None = None) -> bool:
+    """Gate gibberish / keyboard-mash prompts before any model call."""
+    stripped = prompt.strip()
+    if len(stripped) < 8:
+        return False
+    gate = threshold if threshold is not None else ENTROPY_INPUT_GATE_THRESHOLD
+    if compute_char_entropy(stripped) >= ENTROPY_CHAR_GATE_THRESHOLD:
+        return True
+    return compute_shannon_entropy(stripped) >= gate
+
+
+def strip_reasoning_traces(text: str) -> str:
+    """Remove chain-of-thought / scratchpad leakage from model output."""
+    if not text:
+        return text
+    cleaned = text.strip()
+    think_open = "<" + "think" + ">"
+    think_close = "<" + "/" + "think" + ">"
+    think_pattern = re.escape(think_open) + r"[\s\S]*?" + re.escape(think_close)
+    cleaned = re.sub(think_pattern, "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<reasoning>[\s\S]*?</reasoning>", "", cleaned, flags=re.IGNORECASE)
+    lines = cleaned.splitlines()
+    kept: list[str] = []
+    for line in lines:
+        stripped_line = line.strip()
+        if re.match(
+            r"^(?:step\s*\d+|thought:|reasoning:|analysis:|scratchpad:)",
+            stripped_line,
+            re.I,
+        ):
+            continue
+        kept.append(line)
+    cleaned = "\n".join(kept).strip()
+    if "\n\n" in cleaned:
+        parts = [p.strip() for p in cleaned.split("\n\n") if p.strip()]
+        if len(parts) > 1:
+            cleaned = parts[-1]
+    return cleaned.strip()
+
+
+def is_response_truncated(data: dict) -> bool:
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return False
+    first = choices[0]
+    if not isinstance(first, dict):
+        return False
+    return first.get("finish_reason") == "length"
+
+
+def is_rate_limit_error(status_code: int, body: str) -> bool:
+    if status_code == 429:
+        return True
+    low = (body or "").lower()
+    return "rate_limit" in low or "rate limit" in low or "too many requests" in low
+
+
+def is_valid_subtask(fragment: str) -> bool:
+    """Reject garbage fragments from regex splitting."""
+    stripped = fragment.strip()
+    if not stripped:
+        return False
+    if len(stripped) < MIN_SUBTASK_CHARS:
+        return False
+    if len(stripped.split()) < MIN_SUBTASK_WORDS and not is_local_arithmetic(stripped):
+        return False
+    if _INVALID_SUBTASK_PATTERN.match(stripped):
+        return False
+    if is_symbolic_math(stripped) and len(stripped) < 20:
+        return False
+    return True
+
+
+def merge_short_fragments(parts: list[str]) -> list[str]:
+    """Merge fragments that fail is_valid_subtask into neighbors."""
+    if not parts:
+        return parts
+    merged: list[str] = []
+    buffer = ""
+    for part in parts:
+        candidate = f"{buffer} {part}".strip() if buffer else part.strip()
+        if is_valid_subtask(candidate):
+            merged.append(candidate)
+            buffer = ""
+        elif buffer:
+            buffer = candidate
+        else:
+            buffer = part.strip()
+    if buffer:
+        if merged:
+            merged[-1] = f"{merged[-1]} {buffer}".strip()
+        elif is_valid_subtask(buffer) or len(buffer.split()) >= MIN_SUBTASK_WORDS:
+            merged.append(buffer)
+    return merged[:HARD_MAX_SUB_AGENTS]
+
+
 def is_local_capable_prompt(prompt: str) -> bool:
     """Prompts within the local capability ceiling (greetings/format — no LLM facts)."""
     if is_local_trivial_whitelisted(prompt):
+        return True
+    if is_creative_prompt(prompt):
         return True
     return is_simple_format_task(prompt)
 
 
 def would_math_intercept(prompt: str) -> bool:
     """True when deterministic math eval would handle the prompt (no LLM)."""
-    return safe_math_agent(prompt, time.perf_counter()) is not None
+    if is_symbolic_math(prompt):
+        return False
+    return is_local_arithmetic(prompt)
 
 
 _PRIOR_LOCAL_FAILURES: set[str] = set()
@@ -843,8 +990,14 @@ def compute_remote_max_tokens(prompt: str, decision: RouterDecision) -> int:
         CANNED_REPLY_REASON,
     }:
         return REMOTE_MAX_TOKENS_GREETING
+    if decision.reason in {REMOTE_SYMBOLIC_MATH_REASON} or is_symbolic_math(prompt):
+        return REMOTE_MAX_TOKENS_LONG
+    if is_synthesis_or_summary_task(prompt) or is_creative_prompt(prompt):
+        return REMOTE_MAX_TOKENS_LONG
     if decision.complexity_score < 20:
         return REMOTE_MAX_TOKENS_SIMPLE
+    if len(prompt.strip()) > LONG_PROMPT_CHARS:
+        return REMOTE_MAX_TOKENS_LONG
     return REMOTE_MAX_TOKENS_DEFAULT
 
 
@@ -892,6 +1045,35 @@ def route_decision(
             "REMOTE", score, CHARACTER_LEVEL_GUARD_REASON, remote_model, 0.99
         )
 
+    if is_symbolic_math(prompt):
+        return RouterDecision(
+            "REMOTE", score, REMOTE_SYMBOLIC_MATH_REASON, remote_model, 0.95
+        )
+
+    if should_entropy_gate_input(prompt):
+        return RouterDecision(
+            "LOCAL", score, ENTROPY_GATE_REASON, "entropy-gate", 0.99
+        )
+
+    if is_prime_check_prompt(prompt):
+        return RouterDecision("LOCAL", score, LOCAL_PRIME_REASON, "python-eval", 1.0)
+
+    if would_math_intercept(prompt):
+        return RouterDecision("LOCAL", score, LOCAL_MATH_REASON, "python-eval", 1.0)
+
+    if is_creative_prompt(prompt):
+        if local_unavailable:
+            return RouterDecision(
+                "REMOTE", score, LOCAL_UNAVAILABLE_REASON, remote_model, 0.75
+            )
+        if is_heavy_local_model(active_local_model) and not allow_heavy_local:
+            return RouterDecision(
+                "REMOTE", score, HEAVY_LOCAL_BYPASS_REASON, remote_model, 0.80
+            )
+        return RouterDecision(
+            "LOCAL", score, LOCAL_CREATIVE_REASON, active_local_model, 0.88
+        )
+
     if is_factual_risk_prompt(prompt) and not is_local_trivial_whitelisted(prompt):
         return RouterDecision("REMOTE", score, REMOTE_FACTUAL_REASON, remote_model, 0.92)
 
@@ -906,9 +1088,6 @@ def route_decision(
 
     if is_multi_hop_prompt(prompt):
         return RouterDecision("REMOTE", score, REMOTE_MULTIHOP_REASON, remote_model, 0.88)
-
-    if would_math_intercept(prompt):
-        return RouterDecision("LOCAL", score, LOCAL_MATH_REASON, "python-eval", 1.0)
 
     if is_local_capable_prompt(prompt):
         if local_unavailable:
@@ -1061,64 +1240,53 @@ def _ollama_generate(
     return text, tokens
 
 
-def _math_candidates(prompt: str) -> list[str]:
-    """Build candidate strings for math extraction (planner prefix + embedded expr)."""
-    stripped = prompt.strip()
-    candidates: list[str] = []
-    if stripped:
-        candidates.append(stripped)
-    if MATH_PREFIX_PATTERN.match(stripped):
-        expr = MATH_PREFIX_PATTERN.sub("", stripped).strip()
-        if expr and expr not in candidates:
-            candidates.insert(0, expr)
-    return candidates
-
-
 def safe_math_agent(prompt: str, started: float) -> RouteResult | None:
     """
     Extract embedded mathematical expressions from natural-language prompts.
     Planner-tagged tasks like 'math: 2+12' are stripped and evaluated first.
-
-    Highest-priority interceptor: any sub-task containing a real arithmetic
-    expression (must include an operator) is computed locally for zero tokens.
+    Symbolic algebra/calculus is never handled here.
     """
-    seen: set[str] = set()
-    for text in _math_candidates(prompt):
-        if text in seen:
-            continue
-        seen.add(text)
-        for match in MATH_EXTRACT_PATTERN.finditer(text):
-            candidate = match.group(1).strip()
-            if len(candidate) < 3:
-                continue
-            if not MATH_OPERATOR_PATTERN.search(candidate):
-                continue
-            if not any(ch.isdigit() for ch in candidate):
-                continue
-            try:
-                result = eval(candidate, {"__builtins__": None}, {})  # noqa: S307
-                latency_ms = (time.perf_counter() - started) * 1000.0
-                return RouteResult(
-                    answer=str(result),
-                    route="MATH_PYTHON",
-                    tokens=0,
-                    latency_ms=latency_ms,
-                    original_prompt=prompt,
-                    model_used="python-eval",
-                )
-            except ZeroDivisionError:
-                latency_ms = (time.perf_counter() - started) * 1000.0
-                return RouteResult(
-                    answer="Error: Division by zero.",
-                    route="MATH_PYTHON",
-                    tokens=0,
-                    latency_ms=latency_ms,
-                    original_prompt=prompt,
-                    model_used="python-eval",
-                )
-            except Exception:
-                continue
-    return None
+    if is_symbolic_math(prompt):
+        return None
+
+    prime_answer = try_prime_check(prompt)
+    if prime_answer is not None:
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        return RouteResult(
+            answer=prime_answer,
+            route="MATH_PYTHON",
+            tokens=0,
+            latency_ms=latency_ms,
+            original_prompt=prompt,
+            model_used="python-eval",
+        )
+
+    expr = extract_arithmetic_expression(prompt)
+    if expr is None:
+        return None
+    try:
+        result = eval(expr, {"__builtins__": None}, {})  # noqa: S307
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        return RouteResult(
+            answer=str(result),
+            route="MATH_PYTHON",
+            tokens=0,
+            latency_ms=latency_ms,
+            original_prompt=prompt,
+            model_used="python-eval",
+        )
+    except ZeroDivisionError:
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        return RouteResult(
+            answer="Error: Division by zero.",
+            route="MATH_PYTHON",
+            tokens=0,
+            latency_ms=latency_ms,
+            original_prompt=prompt,
+            model_used="python-eval",
+        )
+    except Exception:
+        return None
 
 
 _HEURISTIC_SPLIT = re.compile(
@@ -1222,19 +1390,25 @@ def _starts_with_task_keyword(segment: str) -> bool:
 def split_independent_tasks(prompt: str) -> list[str]:
     """
     Conservative splitter — only for short, explicitly multi-query prompts.
-    Never splits long pasted documents or summarization context by commas/lines.
+    Never splits long pasted documents, summarization context, or math notation.
     """
     cleaned = prompt.strip()
     if not cleaned:
         return [cleaned]
-    if is_long_context_prompt(cleaned) or is_synthesis_or_summary_task(cleaned):
+    if (
+        is_long_context_prompt(cleaned)
+        or is_synthesis_or_summary_task(cleaned)
+        or is_symbolic_math(cleaned)
+    ):
         return [cleaned]
     if len(cleaned) > 200:
         return [cleaned]
 
     parts = [part.strip() for part in _HEURISTIC_SPLIT.split(cleaned) if part.strip()]
-    if len(parts) >= 2 and len(parts) <= HARD_MAX_SUB_AGENTS:
-        return parts
+    if len(parts) >= 2:
+        parts = merge_short_fragments(parts)
+        if len(parts) >= 2 and all(is_valid_subtask(p) for p in parts):
+            return parts[:HARD_MAX_SUB_AGENTS]
 
     if cleaned.count(",") >= 2:
         comma_parts = [part.strip() for part in cleaned.split(",") if part.strip()]
@@ -1248,21 +1422,43 @@ def split_independent_tasks(prompt: str) -> list[str]:
                 prefix = capital_match.group(1)
                 expanded = [comma_parts[0]]
                 for tail in comma_parts[1:]:
-                    if would_math_intercept(tail):
+                    if is_local_arithmetic(tail):
                         expanded.append(tail)
                     else:
                         expanded.append(f"{prefix} {tail}")
-                if len(expanded) >= 2:
+                expanded = merge_short_fragments(expanded)
+                if len(expanded) >= 2 and all(is_valid_subtask(p) for p in expanded):
                     return expanded[:HARD_MAX_SUB_AGENTS]
             query_like = sum(
                 1
                 for part in comma_parts
-                if _starts_with_task_keyword(part)
-                or would_math_intercept(part)
-                or (len(part) <= 24 and part[0].isalpha())
+                if _starts_with_task_keyword(part) or is_local_arithmetic(part)
             )
             if query_like >= 2 and query_like == len(comma_parts):
-                return comma_parts
+                valid = merge_short_fragments(comma_parts)
+                if len(valid) >= 2 and all(is_valid_subtask(p) for p in valid):
+                    return valid[:HARD_MAX_SUB_AGENTS]
+
+    # Sentence / numbered-list boundaries only.
+    sentence_parts = [
+        seg.strip()
+        for seg in re.split(r"(?<=[?.!])\s+(?=[A-Z0-9\"'])", cleaned)
+        if seg.strip()
+    ]
+    if 2 <= len(sentence_parts) <= HARD_MAX_SUB_AGENTS:
+        sentence_parts = merge_short_fragments(sentence_parts)
+        if len(sentence_parts) >= 2 and all(is_valid_subtask(p) for p in sentence_parts):
+            return sentence_parts[:HARD_MAX_SUB_AGENTS]
+
+    enum_parts = [
+        seg.strip()
+        for seg in re.split(r"\s*(?:\d+[.)]\s+)", cleaned)
+        if seg.strip()
+    ]
+    if 2 <= len(enum_parts) <= HARD_MAX_SUB_AGENTS:
+        enum_parts = merge_short_fragments(enum_parts)
+        if len(enum_parts) >= 2 and all(is_valid_subtask(p) for p in enum_parts):
+            return enum_parts[:HARD_MAX_SUB_AGENTS]
 
     return [cleaned]
 
@@ -1285,6 +1481,8 @@ def should_decompose(prompt: str) -> bool:
         return False
     if is_character_level_task(prompt):
         return False
+    if is_symbolic_math(prompt):
+        return False
     if len(prompt.strip()) > 200:
         return False
 
@@ -1295,7 +1493,7 @@ def should_decompose(prompt: str) -> bool:
     substantial = [
         part
         for part in parts
-        if len(part) > 4 and not is_local_trivial_whitelisted(part)
+        if is_valid_subtask(part) and not is_local_trivial_whitelisted(part)
     ]
     if len(substantial) < 2:
         return False
@@ -1303,7 +1501,7 @@ def should_decompose(prompt: str) -> bool:
     independent = sum(
         1
         for part in substantial
-        if _starts_with_task_keyword(part) or would_math_intercept(part)
+        if _starts_with_task_keyword(part) or is_local_arithmetic(part)
     )
     return independent >= 2
 
@@ -1663,6 +1861,9 @@ def count_tasks(text: str) -> int:
     if is_synthesis_or_summary_task(cleaned) or is_long_context_prompt(cleaned):
         return 1
 
+    if is_symbolic_math(cleaned):
+        return 1
+
     lowered = cleaned.lower()
     candidates = [1]
 
@@ -1692,7 +1893,7 @@ def count_tasks(text: str) -> int:
         if independent >= 2:
             candidates.append(len(parts))
 
-    if len(cleaned) <= 200:
+    if len(cleaned) <= 200 and not is_symbolic_math(cleaned):
         lines = len([line for line in cleaned.splitlines() if line.strip()])
         if 2 <= lines <= HARD_MAX_SUB_AGENTS:
             candidates.append(lines)
@@ -2097,6 +2298,35 @@ def route_and_execute(
     token_budget = compute_remote_max_tokens(prompt, decision)
     _log_routing(prompt, decision, local_healthy=local_healthy or has_image)
 
+    if decision.reason == ENTROPY_GATE_REASON:
+        result = RouteResult(
+            answer=(
+                "I couldn't understand that input — it looks like random or garbled text. "
+                "Please rephrase your question clearly."
+            ),
+            route="TEXT_LOCAL",
+            tokens=0,
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+            original_prompt=prompt,
+            model_used="entropy-gate",
+            routing_reason=ENTROPY_GATE_REASON,
+            complexity_score=decision.complexity_score,
+            confidence_score=decision.confidence_score,
+            diagnostics={
+                "token_budget": token_budget,
+                "entropy_gated": True,
+                "input_entropy": compute_shannon_entropy(prompt.strip()),
+            },
+        )
+        _log_dispatch_telemetry(
+            prompt, decision, result, token_budget=token_budget,
+            file_attached=has_txt_context, dispatcher_route=result.route,
+        )
+        if timing:
+            timing.mark("final_response")
+            timing.attach(result)
+        return result
+
     if decision.reason == CANNED_REPLY_REASON:
         result = RouteResult(
             answer=get_canned_greeting_reply(prompt),
@@ -2260,6 +2490,10 @@ def route_and_execute(
     return result
 
 
+# Limit concurrent Fireworks calls during agent swarms.
+_REMOTE_CALL_SEMAPHORE = threading.BoundedSemaphore(SWARM_MAX_CONCURRENT)
+
+
 def execute_agent_swarm(
     tasks: list[str],
     threshold: int,
@@ -2274,8 +2508,7 @@ def execute_agent_swarm(
     swarm_started = time.perf_counter()
     ordered: list[RouteResult | None] = [None] * len(tasks)
 
-    # One worker per task (capped) so no sub-agent waits in a queue behind another.
-    worker_count = max(1, min(len(tasks), 8))
+    worker_count = max(1, min(len(tasks), SWARM_MAX_CONCURRENT))
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         future_map = {
             executor.submit(
@@ -2335,6 +2568,7 @@ def execute_agent_swarm(
             "swarm_sub_agents": len(tasks),
             "swarm_tokens_total": total_tokens,
             "original_prompt_intact": bool(original_prompt),
+            "swarm_max_concurrent": SWARM_MAX_CONCURRENT,
         },
     )
 
@@ -2861,12 +3095,28 @@ def _route_text_remote(
 
     # Diagnostics: every model_id we attempt, in order, with its outcome.
     remote_attempts: list[dict[str, str]] = []
+    rate_limit_hits = 0
+    truncated_flag = False
 
     def _remote_result(
-        answer: str, tokens: int, retries: int, model_used: str
+        answer: str,
+        tokens: int,
+        retries: int,
+        model_used: str,
+        *,
+        extra_diag: dict[str, object] | None = None,
     ) -> RouteResult:
+        cleaned_answer = strip_reasoning_traces(answer)
+        diag: dict[str, object] = {
+            "remote_attempts": remote_attempts,
+            "prompt_adjustment": adjust_method,
+            "rate_limit_hits": rate_limit_hits,
+            "truncated": truncated_flag,
+        }
+        if extra_diag:
+            diag.update(extra_diag)
         return RouteResult(
-            answer=answer,
+            answer=cleaned_answer,
             route=route_name,
             tokens=tokens,
             latency_ms=(time.perf_counter() - started) * 1000.0,
@@ -2877,39 +3127,73 @@ def _route_text_remote(
             distillation_error=distill_error,
             fallback_used=fallback,
             retries=retries,
-            diagnostics={
-                "remote_attempts": remote_attempts,
-                "prompt_adjustment": adjust_method,
-            },
+            diagnostics=diag,
         )
 
     # A REMOTE decision must be served remotely — we NEVER fall back to local here.
-    # For each candidate model: retry transient errors; on an invalid/undeployed
-    # model error, automatically advance to the next candidate.
     max_attempts = 2
     last_detail = "unknown error"
 
     for model_id in candidates:
-        payload = {
-            "model": model_id,
-            "messages": [
-                {"role": "system", "content": SUB_AGENT_SYSTEM_PROMPT},
-                {"role": "user", "content": distilled},
-            ],
-            "max_tokens": max_tokens,
-            "temperature": 0.0,
-        }
+        current_max_tokens = max_tokens
 
         unavailable = False
         malformed_response = False
         for attempt in range(max_attempts):
+            payload = {
+                "model": model_id,
+                "messages": [
+                    {"role": "system", "content": SUB_AGENT_SYSTEM_PROMPT},
+                    {"role": "user", "content": distilled},
+                ],
+                "max_tokens": current_max_tokens,
+                "temperature": 0.0,
+            }
+            acquired = False
             try:
+                acquired = _REMOTE_CALL_SEMAPHORE.acquire(timeout=180)
+                if not acquired:
+                    last_detail = "Remote concurrency limit timeout"
+                    continue
                 response = requests.post(
                     REMOTE_ENDPOINT,
                     headers=headers,
                     json=payload,
                     timeout=180,
                 )
+                if is_rate_limit_error(response.status_code, response.text):
+                    rate_limit_hits += 1
+                    last_detail = f"HTTP {response.status_code}: rate limited"
+                    remote_attempts.append(
+                        {
+                            "model_id": model_id,
+                            "status": "rate_limited",
+                            "detail": response.text[:200],
+                        }
+                    )
+                    for rate_retry in range(RATE_LIMIT_MAX_RETRIES):
+                        backoff = RATE_LIMIT_BACKOFF_BASE * (2 ** rate_retry)
+                        time.sleep(backoff)
+                        response = requests.post(
+                            REMOTE_ENDPOINT,
+                            headers=headers,
+                            json=payload,
+                            timeout=180,
+                        )
+                        if not is_rate_limit_error(response.status_code, response.text):
+                            break
+                        rate_limit_hits += 1
+                    if is_rate_limit_error(response.status_code, response.text):
+                        last_detail = (
+                            "Fireworks rate limit exceeded. "
+                            "Please wait a moment and try again."
+                        )
+                        return _remote_result(
+                            f"⚠️ {last_detail}",
+                            distill_tokens,
+                            attempt,
+                            model_id,
+                        )
                 if response.status_code >= 500:
                     last_detail = f"HTTP {response.status_code} (transient)"
                     logger.warning(
@@ -2963,6 +3247,20 @@ def _route_text_remote(
                     )
                     break
                 remote_tokens = int(data.get("usage", {}).get("total_tokens", 0))
+                if is_response_truncated(data):
+                    truncated_flag = True
+                    if current_max_tokens < REMOTE_MAX_TOKENS_CAP:
+                        current_max_tokens = min(
+                            current_max_tokens * 2, REMOTE_MAX_TOKENS_CAP
+                        )
+                        remote_attempts.append(
+                            {
+                                "model_id": model_id,
+                                "status": "truncated_retry",
+                                "detail": f"retry max_tokens={current_max_tokens}",
+                            }
+                        )
+                        continue
                 remote_attempts.append({"model_id": model_id, "status": "ok"})
                 return _remote_result(
                     answer, remote_tokens + distill_tokens, attempt, model_id
@@ -2994,11 +3292,15 @@ def _route_text_remote(
                     {"model_id": model_id, "status": "error", "detail": detail}
                 )
                 return _remote_result(
-                    f"⚠️ Remote inference error ({model_id}):\n\n{detail}",
+                    "⚠️ Remote service temporarily unavailable. Please try again shortly.",
                     distill_tokens,
                     attempt,
                     model_id,
                 )
+
+            finally:
+                if acquired:
+                    _REMOTE_CALL_SEMAPHORE.release()
 
         if unavailable:
             logger.warning(
@@ -3152,7 +3454,11 @@ def render_middleware_telemetry(result: RouteResult) -> None:
     if not has_distillation and not has_swarm and not has_fallback and not has_remote_attempts and not has_cache and not has_phantom:
         return
 
-    with st.expander("ANGKOR + PHANTOM Telemetry"):
+    with st.expander(
+        "ANGKOR + PHANTOM Telemetry",
+        expanded=False,
+        key=_render_key("telemetry_expander", result),
+    ):
         if result.complexity_score is not None:
             st.markdown(f"**Complexity score:** `{result.complexity_score}`")
 
@@ -3252,7 +3558,7 @@ def render_middleware_telemetry(result: RouteResult) -> None:
 
         if has_swarm:
             st.markdown("#### Agent Swarm Decomposition")
-            worker_count = max(1, min(len(result.sub_results), 8))
+            worker_count = max(1, min(len(result.sub_results), SWARM_MAX_CONCURRENT))
             st.caption(
                 f"Parallel sub-agents via ThreadPoolExecutor "
                 f"(max_workers={worker_count}, wall-clock latency)."
@@ -3262,7 +3568,11 @@ def render_middleware_telemetry(result: RouteResult) -> None:
                 st.markdown(
                     f"**Sub-Agent {index}** → `{sub.route}`{badge} · {sub.latency_ms:.1f} ms"
                 )
-                st.code(sub.original_prompt, language=None)
+                st.code(
+                    sub.original_prompt,
+                    language=None,
+                    key=_render_key("swarm_prompt", result, str(index)),
+                )
                 if sub.fallback_used and sub.fallback_reason:
                     st.caption(f"↩️ {sub.fallback_reason} → `{sub.model_used}`")
             if result.wall_clock_ms is not None:
@@ -3271,6 +3581,8 @@ def render_middleware_telemetry(result: RouteResult) -> None:
 
 def render_assistant_message(message: dict) -> None:
     result = message["result"]
+    if message.get("message_id") and not result.message_id:
+        result.message_id = str(message["message_id"])
     render_metrics(result)
     render_middleware_telemetry(result)
     st.markdown(message["content"])
@@ -3438,10 +3750,13 @@ def _handle_pending_chat(
 
         status_slot.empty()
         _render_orchestration_caption(result)
+        message_id = uuid.uuid4().hex
+        result.message_id = message_id
         assistant_message = {
             "role": "assistant",
             "content": result.answer,
             "result": result,
+            "message_id": message_id,
         }
         render_assistant_message(assistant_message)
         st.session_state.messages.append(assistant_message)
@@ -3568,6 +3883,8 @@ def main() -> None:
             min_value=2.0, max_value=5.0, value=3.5, step=0.1,
             help="H(Y) above this → abort local generation (PHANTOM A).",
         )
+        if _ANGKOR_PHANTOM_RUNNER is not None:
+            _ANGKOR_PHANTOM_RUNNER._confidence._abort_threshold = entropy_threshold
 
         theta_current = _ANGKOR_ADAPTIVE_THETA.theta if _ANGKOR_ADAPTIVE_THETA else 0.65
         st.metric("Adaptive θ", f"{theta_current:.3f}", delta=None)

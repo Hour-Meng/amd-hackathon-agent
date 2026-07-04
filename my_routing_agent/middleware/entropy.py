@@ -33,3 +33,20 @@ def compute_shannon_entropy(text: str) -> float:
 def normalize_entropy(entropy: float, max_h: float = 10.0) -> float:
     """Normalize entropy to [0, 1] range. Max H for typical English text ~8-10."""
     return max(0.0, min(1.0, entropy / max_h))
+
+
+def compute_char_entropy(text: str) -> float:
+    """Shannon entropy over characters — better for detecting random gibberish."""
+    if not text or not text.strip():
+        return 0.0
+    chars = [ch.lower() for ch in text if not ch.isspace()]
+    if not chars:
+        return 0.0
+    total = len(chars)
+    freq = Counter(chars)
+    entropy = 0.0
+    for count in freq.values():
+        p = count / total
+        if p > 0:
+            entropy -= p * math.log2(p)
+    return entropy

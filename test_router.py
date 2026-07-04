@@ -14,11 +14,15 @@ from app import (
     DEFAULT_LOCAL_MODEL,
     DEFAULT_REMOTE_MODEL,
     DISTILL_MIN_CHARS,
+    HARD_MAX_SUB_AGENTS,
+    LOCAL_CREATIVE_REASON,
     LOCAL_GREETING_REASON,
     LOCAL_MATH_REASON,
+    LOCAL_PRIME_REASON,
     LOCAL_UNAVAILABLE_REASON,
     REMOTE_FACTUAL_REASON,
     REMOTE_MODEL_CANDIDATES,
+    REMOTE_SYMBOLIC_MATH_REASON,
     ROUTER_DEFAULT_REMOTE,
     SUB_AGENT_SYSTEM_PROMPT,
     build_remote_candidates,
@@ -33,6 +37,9 @@ from app import (
     is_direct_answer_prompt,
     is_factual_risk_prompt,
     is_known_deployed_model,
+    is_rate_limit_error,
+    is_response_truncated,
+    is_valid_subtask,
     mark_prior_local_failure,
     normalize_model_id,
     plan_request,
@@ -40,6 +47,8 @@ from app import (
     reset_prior_local_failures,
     route_decision,
     safe_math_agent,
+    strip_reasoning_traces,
+    _render_key,
 )
 
 LOCAL_MODEL = DEFAULT_LOCAL_MODEL
@@ -1270,6 +1279,168 @@ def test_validate_remote_models_filters_inaccessible():
         )
     assert out["validated"] == ["accounts/fireworks/models/qwen3p7-plus"]
     assert "accounts/fireworks/models/minimax-m3" in out["removed"]
+
+
+# --- Adversarial diagnostic fixes (ANGKOR + PHANTOM) -----------------------------
+
+
+def test_symbolic_math_routes_remote_not_python_eval():
+    from my_routing_agent.utils.math_eval import is_symbolic_math
+
+    prompt = "Solve for x: 3x^2 + 5x - 2 = 0"
+    assert is_symbolic_math(prompt)
+    assert not app.would_math_intercept(prompt)
+    decision = _decide(prompt)
+    assert decision.route == "REMOTE"
+    assert decision.reason == REMOTE_SYMBOLIC_MATH_REASON
+    assert safe_math_agent(prompt, time.perf_counter()) is None
+
+
+def test_derivative_routes_remote_not_python_eval():
+    prompt = "Calculate the derivative of x^3 + 2x^2 - 5x"
+    decision = _decide(prompt)
+    assert decision.route == "REMOTE"
+    assert decision.reason == REMOTE_SYMBOLIC_MATH_REASON
+    assert not app.would_math_intercept(prompt)
+
+
+def test_simple_arithmetic_stays_local():
+    decision = _decide("2 + 2")
+    assert decision.route == "LOCAL"
+    assert decision.reason == LOCAL_MATH_REASON
+    assert app.would_math_intercept("2 + 2")
+
+
+def test_prime_check_routes_local():
+    decision = _decide("is 17 prime")
+    assert decision.route == "LOCAL"
+    assert decision.reason == LOCAL_PRIME_REASON
+    result = safe_math_agent("is 17 prime", time.perf_counter())
+    assert result is not None
+    assert result.answer == "yes"
+
+
+def test_creative_prompt_routes_local():
+    decision = _decide("Write a poem about the ocean")
+    assert decision.route == "LOCAL"
+    assert decision.reason == LOCAL_CREATIVE_REASON
+
+
+def test_math_heavy_prompt_not_exploded_into_swarm():
+    prompt = "Solve for x: 3x^2 + 5x - 2 = 0"
+    parts = heuristic_task_split(prompt)
+    assert len(parts) == 1
+    assert not is_beneficial_to_decompose(prompt)
+    planner = app.decide_mode(prompt)
+    assert planner.num_agents == 1
+
+
+def test_invalid_subtask_fragments_rejected():
+    assert not is_valid_subtask("2")
+    assert not is_valid_subtask("8]")
+    mixed = "tell me the capital of france, london, paris, cambodia, 2+12"
+    parts = heuristic_task_split(mixed)
+    assert len(parts) <= HARD_MAX_SUB_AGENTS
+    assert all(is_valid_subtask(p) for p in parts)
+
+
+def test_rate_limit_detection_and_clean_message():
+    assert is_rate_limit_error(429, "")
+    assert is_rate_limit_error(400, "RATE_LIMIT_EXCEEDED")
+    from unittest.mock import patch
+
+    calls = {"n": 0}
+
+    def fake_post(*_args, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            return _FakeResponse(429, text="RATE_LIMIT_EXCEEDED")
+        return _FakeResponse(
+            200,
+            payload={
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"total_tokens": 5},
+            },
+        )
+
+    with patch("app.requests.post", side_effect=fake_post):
+        with patch("app.time.sleep", return_value=None):
+            result = app._route_text_remote(
+                "hello",
+                "fw_test",
+                LOCAL_MODEL,
+                REMOTE_MODEL,
+                time.perf_counter(),
+            )
+    assert calls["n"] >= 3
+    assert result.answer == "ok"
+    assert result.diagnostics.get("rate_limit_hits", 0) >= 1
+
+
+def test_truncation_triggers_retry():
+    from unittest.mock import patch
+
+    calls = {"n": 0}
+
+    def fake_post(*_args, **_kwargs):
+        calls["n"] += 1
+        finish = "length" if calls["n"] == 1 else "stop"
+        return _FakeResponse(
+            200,
+            payload={
+                "choices": [
+                    {"message": {"content": "partial answer"}, "finish_reason": finish}
+                ],
+                "usage": {"total_tokens": 10},
+            },
+        )
+
+    with patch("app.requests.post", side_effect=fake_post):
+        result = app._route_text_remote(
+            "Explain the French Revolution in detail",
+            "fw_test",
+            LOCAL_MODEL,
+            REMOTE_MODEL,
+            time.perf_counter(),
+            max_tokens=64,
+        )
+    assert calls["n"] >= 2
+    assert result.answer == "partial answer"
+    assert result.diagnostics.get("truncated") is True
+
+
+def test_is_response_truncated_helper():
+    assert is_response_truncated({"choices": [{"finish_reason": "length"}]})
+    assert not is_response_truncated({"choices": [{"finish_reason": "stop"}]})
+
+
+def test_render_key_unique_per_message():
+    from app import RouteResult
+
+    r1 = RouteResult("a", "TEXT_LOCAL", 0, 1.0, message_id="msg_a")
+    r2 = RouteResult("b", "TEXT_LOCAL", 0, 1.0, message_id="msg_b")
+    assert _render_key("distilled_prompt", r1) != _render_key("distilled_prompt", r2)
+    assert _render_key("orig_prompt", r1, "1") != _render_key("orig_prompt", r1, "2")
+
+
+def test_strip_reasoning_traces_removes_scratchpad():
+    raw = "Step 1: think about rhymes.\n\nThe rain falls softly on the shore."
+    cleaned = strip_reasoning_traces(raw)
+    assert "Step 1" not in cleaned
+    assert "rain falls softly" in cleaned
+
+
+def test_symbolic_math_not_caught_by_multihop():
+    prompt = "Explain and solve for x: 3x^2 + 5x - 2 = 0"
+    decision = _decide(prompt)
+    assert decision.reason == REMOTE_SYMBOLIC_MATH_REASON
+
+
+def test_entropy_gate_blocks_gibberish():
+    gibberish = "xqwp zmkv jfhd lsrt pwqm zkvn mxhf"
+    assert app.should_entropy_gate_input(gibberish)
+    decision = _decide(gibberish)
+    assert decision.reason == app.ENTROPY_GATE_REASON
 
 
 def _run() -> int:
