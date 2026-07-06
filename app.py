@@ -3932,7 +3932,8 @@ def main() -> None:
             help="H(Y) above this → abort local generation (PHANTOM A).",
         )
         if _ANGKOR_PHANTOM_RUNNER is not None:
-            _ANGKOR_PHANTOM_RUNNER._confidence._abort_threshold = entropy_threshold
+            # DeadZoneRunner uses abort_threshold from ensemble report
+            _ANGKOR_PHANTOM_RUNNER.abort_threshold = entropy_threshold
 
         theta_current = _ANGKOR_ADAPTIVE_THETA.theta if _ANGKOR_ADAPTIVE_THETA else 0.65
         st.metric("Adaptive θ", f"{theta_current:.3f}", delta=None)

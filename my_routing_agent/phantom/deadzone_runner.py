@@ -59,7 +59,7 @@ class DeadZoneRunner:
     - local generation with early-abort monitor
     - cancellable remote with budgeted max_tokens
     - remote model-not-found → next validated model
-    - local abort cancels remote only if remote hasn't passed 2x initial token window
+    - local abort cancels abort cancels remote only if remote hasn't passed 2x initial token window
     """
 
     def __init__(
@@ -73,6 +73,14 @@ class DeadZoneRunner:
         self._ensemble = ensemble_report or {}
         self._initial_token_window = initial_token_window
         self.telemetry = DeadZoneTelemetry()
+
+    @property
+    def abort_threshold(self) -> float:
+        return float(self._ensemble.get("abort_threshold", 0.25))
+
+    @abort_threshold.setter
+    def abort_threshold(self, value: float) -> None:
+        self._ensemble["abort_threshold"] = value
 
     @staticmethod
     def _is_model_unavailable(error_text: str) -> bool:
