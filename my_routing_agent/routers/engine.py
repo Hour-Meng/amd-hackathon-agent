@@ -336,10 +336,11 @@ class SklearnRouter:
     def __init__(
         self,
         feature_extractor: FeatureExtractor | None = None,
+        adaptive_threshold: AdaptiveThreshold | None = None,
         adaptive_config: AdaptiveThresholdConfig | None = None,
     ) -> None:
         self._features = feature_extractor or FeatureExtractor()
-        self._theta = AdaptiveThreshold(adaptive_config)
+        self._theta = adaptive_threshold or AdaptiveThreshold(adaptive_config)
         self._model = self._load_model()
         self._ready = self._model is not None
 

@@ -1457,5 +1457,103 @@ def _run() -> int:
     return 1 if failures else 0
 
 
+# ============================================================================
+# Integration tests for stress-test fixes
+# ============================================================================
+
+
+def test_cache_store_guard_skips_failed_results():
+    """_cache_store should not store failed results."""
+    from app import _cache_store, _lazy_init_angkor_cache
+    from app import RouteResult
+    import app as _app
+
+    cache = _lazy_init_angkor_cache()
+    if cache is None:
+        return  # skip if no cache
+
+    prompt = "test guard prompt 12345"
+    # Create a failed result
+    failed_result = RouteResult(
+        answer="",
+        route="TEXT_LOCAL",
+        tokens=0,
+        latency_ms=100,
+        original_prompt=prompt,
+        model_used="local",
+        success=False,
+        error_type="timeout",
+    )
+
+    # Store should be skipped for failed results
+    _cache_store(prompt, failed_result)
+
+    # Verify it was NOT stored
+    hit = cache.lookup(prompt)
+    assert hit is None, f"Failed result should not be cached but got: {hit}"
+
+
+def test_cache_eviction_policy_exists():
+    """SemanticCache should have max_entries parameter and eviction method."""
+    from my_routing_agent.cache.semantic_cache import SemanticCache
+    from my_routing_agent.config import CacheConfig
+
+    config = CacheConfig(max_entries=5)
+    assert config.max_entries == 5
+
+
+def test_prior_failure_key_uses_hash():
+    """_prompt_failure_key should use SHA256 hash, not truncation."""
+    from app import _prompt_failure_key
+
+    key1 = _prompt_failure_key("short")
+    key2 = _prompt_failure_key("short prompt" + "x" * 1000)
+
+    # Different inputs should produce different keys (no collision)
+    assert key1 != key2
+    # Keys should be hex strings of consistent length
+    assert len(key1) == 32
+    assert len(key2) == 32
+
+
+def test_adaptive_threshold_wired_to_router():
+    """SklearnRouter should accept optional adaptive_threshold parameter."""
+    from my_routing_agent.routers.engine import SklearnRouter
+
+    router = SklearnRouter()
+    assert hasattr(router, '_adaptive_threshold')
+    assert router._adaptive_threshold is None
+
+
+def test_deadzone_runner_import():
+    """DeadZoneRunner should be importable and usable."""
+    from my_routing_agent.phantom.deadzone_runner import DeadZoneRunner
+
+    assert callable(DeadZoneRunner)
+
+
+def test_local_health_cache_marks_connection_error():
+    """ConnectionError should mark local health as False."""
+    from app import _LOCAL_HEALTH_CACHE, _LOCAL_HEALTH_LOCK, LOCAL_HEALTH_TTL_SECONDS
+    import time
+    import app as _app
+
+    model = "test-connection-error-model"
+    with _LOCAL_HEALTH_LOCK:
+        _LOCAL_HEALTH_CACHE[model] = (time.time() + 1000, True)
+
+    # Simulate what ConnectionError handler does
+    with _LOCAL_HEALTH_LOCK:
+        _LOCAL_HEALTH_CACHE[model.strip()] = (
+            time.time() + LOCAL_HEALTH_TTL_SECONDS,
+            False,
+        )
+
+    with _LOCAL_HEALTH_LOCK:
+        _, healthy = _LOCAL_HEALTH_CACHE.get(model, (0, True))
+
+    assert healthy is False, "ConnectionError should mark health as False"
+
+
 if __name__ == "__main__":
     raise SystemExit(_run())

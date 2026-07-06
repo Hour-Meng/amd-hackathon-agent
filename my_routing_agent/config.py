@@ -102,6 +102,9 @@ class CacheConfig:
     store_path: str = field(
         default_factory=lambda: os.getenv("CACHE_STORE_PATH", "cache_store.json")
     )
+    max_entries: int = field(
+        default_factory=lambda: int(os.getenv("CACHE_MAX_ENTRIES", "10000"))
+    )
 
 
 @dataclass(frozen=True)

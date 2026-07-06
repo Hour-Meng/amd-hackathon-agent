@@ -112,6 +112,7 @@ class SemanticCache:
             timestamp=time.time(),
         )
         logger.info("CACHE STORE idx=%d response_len=%d", idx, len(response))
+        self._evict_oldest()
 
     def clear(self) -> None:
         if not self._initialized:
@@ -120,6 +121,18 @@ class SemanticCache:
         self._store.clear()
         self._next_id = 0
         logger.info("Cache cleared")
+
+    def _evict_oldest(self) -> None:
+        """Evict oldest entries when cache exceeds max_entries."""
+        max_entries = getattr(self._config, "max_entries", 10000)
+        if len(self._store) <= max_entries:
+            return
+        # Find the oldest entries by timestamp
+        num_to_evict = len(self._store) - max_entries
+        sorted_ids = sorted(self._store.keys(), key=lambda k: self._store[k].timestamp)
+        for old_id in sorted_ids[:num_to_evict]:
+            del self._store[old_id]
+        logger.info("Cache evicted %d oldest entries (max=%d)", num_to_evict, max_entries)
 
     @property
     def size(self) -> int:

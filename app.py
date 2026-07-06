@@ -34,8 +34,7 @@ from my_routing_agent.routers.engine import (
 )
 from my_routing_agent.routers.features import FeatureExtractor
 from my_routing_agent.phantom.budget import BudgetEnforcer
-from my_routing_agent.phantom.confidence import ConfidencePredictor
-from my_routing_agent.phantom.speculative import SpeculativeRunner
+from my_routing_agent.phantom.deadzone_runner import DeadZoneRunner
 from my_routing_agent.utils.math_eval import (
     extract_arithmetic_expression,
     is_local_arithmetic,
@@ -51,7 +50,7 @@ logger = logging.getLogger("hybrid_router")
 _ANGKOR_CACHE: SemanticCache | None = None
 _ANGKOR_SKLEARN_ROUTER: SklearnRouter | None = None
 _ANGKOR_ADAPTIVE_THETA: AdaptiveThreshold | None = None
-_ANGKOR_PHANTOM_RUNNER: SpeculativeRunner | None = None
+_ANGKOR_PHANTOM_RUNNER: DeadZoneRunner | None = None
 _ANGKOR_VERIFIER: CascadeVerifier | None = None
 if not logger.handlers:
     logging.basicConfig(
@@ -828,12 +827,17 @@ def would_math_intercept(prompt: str) -> bool:
     return is_local_arithmetic(prompt)
 
 
+import hashlib
+
 _PRIOR_LOCAL_FAILURES: set[str] = set()
 _PRIOR_FAILURE_LOCK = threading.Lock()
 
 
 def _prompt_failure_key(prompt: str) -> str:
-    return prompt.strip().lower()[:300]
+    """Generate a collision-resistant key for prior local failures."""
+    # Use SHA256 hash to avoid collisions from truncation
+    full_prompt = prompt.strip().lower()
+    return hashlib.sha256(full_prompt.encode()).hexdigest()[:32]
 
 
 def mark_prior_local_failure(prompt: str) -> None:
@@ -2597,27 +2601,35 @@ def _angkor_phantom_execute(
         L_out_norm = float(features[4])
         confidence = 1.0 - abs(angkor_result.complexity_score - router.theta) / 0.5
 
-        token_budget = compute_remote_max_tokens(
-            prompt,
-            RouterDecision("REMOTE", 50, "phantom-race", active_remote_model, 0.8),
-        )
+        # Use validated remote models for fallback chain
+        remote_candidates = build_remote_candidates(active_remote_model)
 
-        def _remote_fn(text: str, **kw: object) -> str | None:
-            max_tok = int(kw.get("max_tokens", token_budget))
-            result = _route_text_remote(
-                text, api_key, active_local_model, active_remote_model,
-                started, fallback=False, skip_distillation=False,
-                max_tokens=max_tok,
-            )
-            return result.answer if result and result.answer else None
+        def _remote_call(
+            text: str,
+            model_id: str,
+            max_tokens: int,
+            cancel_event,
+            token_counter,
+        ) -> tuple[str | None, str, int]:
+            """Remote call wrapper matching DeadZoneRunner signature."""
+            try:
+                result = _route_text_remote(
+                    text, api_key, active_local_model, model_id,
+                    started, fallback=False, skip_distillation=False,
+                    max_tokens=max_tokens,
+                )
+                tokens = result.tokens if result else 0
+                return result.answer if result and result.answer else None, "ok", tokens
+            except Exception as exc:
+                return None, f"error:{exc}", 0
 
-        source_name = "local" if angkor_result.destination == "local" else "remote"
-        answer_text, winner, telemetry = runner.phantom_race(
+        answer_text, winner, telemetry = runner.run_race(
             prompt=prompt,
+            local_model=active_local_model,
+            validated_remote_models=remote_candidates,
+            remote_call=_remote_call,
             L_out_norm=L_out_norm,
             confidence=confidence,
-            local_model=active_local_model,
-            remote_call=_remote_fn,
         )
         route: RouteName = "PHANTOM_RACE"
         latency_ms = (time.perf_counter() - started) * 1000.0
@@ -2660,6 +2672,10 @@ def _cache_lookup(prompt: str) -> RouteResult | None:
 
 def _cache_store(prompt: str, result: RouteResult) -> None:
     global _ANGKOR_CACHE
+    # Only store successful results in the cache
+    if not result.success:
+        logger.debug("Skipping cache store for failed result: route=%s", result.route)
+        return
     cache = _lazy_init_angkor_cache()
     if cache is None:
         return
@@ -2685,27 +2701,42 @@ def _verify_local_result(
     verifier = _ANGKOR_VERIFIER
     if verifier is None:
         return result
-    if result.route not in ("TEXT_LOCAL", "MATH_PYTHON", "PHANTOM_RACE"):
-        return result
 
-    def _escalate_fn(q: str) -> str:
-        res = _route_text_remote(
-            q, api_key, "", DEFAULT_REMOTE_MODEL, started,
-            fallback=True, skip_distillation=True,
+    def _verify_one(pr: str, rr: RouteResult) -> RouteResult:
+        """Verify a single result (used for both top-level and sub-agents)."""
+        if rr.route not in ("TEXT_LOCAL", "MATH_PYTHON", "PHANTOM_RACE"):
+            return rr
+
+        def _escalate_fn(q: str) -> str:
+            res = _route_text_remote(
+                q, api_key, "", DEFAULT_REMOTE_MODEL, started,
+                fallback=True, skip_distillation=True,
+            )
+            return res.answer if res and res.answer else ""
+
+        task_type = "qa"
+        if rr.route == "MATH_PYTHON":
+            task_type = "math"
+        accepted, final_output, escalated = verifier.verify(
+            pr, rr.answer, task_type=task_type, remote_escalate_fn=_escalate_fn,
         )
-        return res.answer if res and res.answer else ""
+        if escalated:
+            rr.answer = final_output
+            rr.diagnostics["cascade_escalated"] = True
+        if not accepted:
+            rr.answer = final_output or rr.answer
+        return rr
 
-    task_type = "qa"
-    if result.route == "MATH_PYTHON":
-        task_type = "math"
-    accepted, final_output, escalated = verifier.verify(
-        prompt, result.answer, task_type=task_type, remote_escalate_fn=_escalate_fn,
-    )
-    if escalated:
-        result.answer = final_output
-        result.diagnostics["cascade_escalated"] = True
-    if not accepted:
-        result.answer = final_output or result.answer
+    # Verify top-level result
+    result = _verify_one(prompt, result)
+
+    # Verify each sub-agent result in swarm
+    if result.sub_results:
+        for i, sub in enumerate(result.sub_results):
+            # Build the full context for the sub-task (original prompt + sub-task)
+            sub_prompt = sub.original_prompt or result.original_prompt
+            result.sub_results[i] = _verify_one(sub_prompt, sub)
+
     return result
 
 
@@ -2979,6 +3010,11 @@ def _route_text_local(
         except requests.ConnectionError:
             fallback_reason = "Ollama is not running on localhost:11434."
             error_type = "connection_error"
+            with _LOCAL_HEALTH_LOCK:
+                _LOCAL_HEALTH_CACHE[active_local_model.strip()] = (
+                    time.time() + LOCAL_HEALTH_TTL_SECONDS,
+                    False,
+                )
         except requests.Timeout:
             # Strict timeout exceeded: stop waiting, mark backend unhealthy, go remote.
             fallback_reason = (
@@ -3614,6 +3650,17 @@ def _lazy_init_angkor_cache() -> SemanticCache | None:
     return _ANGKOR_CACHE
 
 
+def _load_phantom_ensemble() -> dict:
+    """Load PHANTOM ensemble calibration report."""
+    path = ROOT_DIR / "phantom_ensemble.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.warning("Failed to load phantom_ensemble.json")
+    return {}
+
+
 def _bootstrap_angkor_session() -> None:
     """Persist ANGKOR/PHANTOM singletons across Streamlit reruns via session_state."""
     global _ANGKOR_CACHE, _ANGKOR_SKLEARN_ROUTER, _ANGKOR_ADAPTIVE_THETA
@@ -3628,11 +3675,12 @@ def _bootstrap_angkor_session() -> None:
         ss.angkor_cache_initializing = False
         try:
             from sklearn.linear_model import LogisticRegression  # noqa: F401
-            ss.angkor_sklearn_router = SklearnRouter()
+            ss.angkor_sklearn_router = SklearnRouter(adaptive_threshold=AdaptiveThreshold())
         except ImportError:
             ss.angkor_sklearn_router = None
         ss.angkor_adaptive_theta = AdaptiveThreshold()
-        ss.angkor_phantom_runner = SpeculativeRunner()
+        ensemble_report = _load_phantom_ensemble()
+        ss.angkor_phantom_runner = DeadZoneRunner(ensemble_report=ensemble_report)
         ss.angkor_verifier = CascadeVerifier()
     _ANGKOR_SKLEARN_ROUTER = ss.get("angkor_sklearn_router")
     _ANGKOR_ADAPTIVE_THETA = ss.get("angkor_adaptive_theta")
