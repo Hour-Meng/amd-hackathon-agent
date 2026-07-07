@@ -340,6 +340,7 @@ class SklearnRouter:
         adaptive_config: AdaptiveThresholdConfig | None = None,
     ) -> None:
         self._features = feature_extractor or FeatureExtractor()
+        self._adaptive_threshold = adaptive_threshold
         self._theta = adaptive_threshold or AdaptiveThreshold(adaptive_config)
         self._model = self._load_model()
         self._ready = self._model is not None
