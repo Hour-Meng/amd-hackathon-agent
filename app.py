@@ -405,6 +405,7 @@ class RouteResult:
     num_agents: int = 1
     escalation_reason: str | None = None
     message_id: str = ""
+    success: bool = True
 
 
 @dataclass
@@ -1288,6 +1289,7 @@ def safe_math_agent(prompt: str, started: float) -> RouteResult | None:
             latency_ms=latency_ms,
             original_prompt=prompt,
             model_used="python-eval",
+            success=False,
         )
     except Exception:
         return None
@@ -2537,6 +2539,7 @@ def execute_agent_swarm(
                     tokens=0,
                     latency_ms=0.0,
                     original_prompt=tasks[index],
+                    success=False,
                 )
 
     sub_results: list[RouteResult] = [
@@ -2547,6 +2550,7 @@ def execute_agent_swarm(
             tokens=0,
             latency_ms=0.0,
             original_prompt=tasks[i],
+            success=False,
         )
         for i, result in enumerate(ordered)
     ]
@@ -2803,6 +2807,7 @@ def process_user_request(
                 routing_reason=preview_decision.reason,
                 complexity_score=preview_decision.complexity_score,
                 diagnostics={"fail_fast": True, "skipped_phantom": True, "skipped_cache": True},
+                success=False,
             )
 
     if timing:
@@ -3829,6 +3834,7 @@ def run_request_nonblocking(fn, *args, **kwargs) -> RouteResult:
             original_prompt=prompt_preview,
             routing_reason="ui-timeout",
             diagnostics={"cancelled": True},
+            success=False,
         )
 
 
