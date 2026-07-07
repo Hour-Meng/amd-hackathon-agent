@@ -1,0 +1,7 @@
+# Lean dependencies for AMD Hackathon batch container (no FAISS / sentence-transformers).
+streamlit>=1.32.0
+requests>=2.31.0
+scikit-learn>=1.4.2
+psutil>=5.9.0
+tiktoken>=0.7.0
+Pillow>=10.0.0

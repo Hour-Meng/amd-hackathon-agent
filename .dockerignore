@@ -1,0 +1,14 @@
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.git/
+.gitignore
+.cursor/
+.pytest_cache/
+.mypy_cache/
+.env
+.fireworks_api_key
+*.md
+.github/

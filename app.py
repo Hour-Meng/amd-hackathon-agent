@@ -42,7 +42,12 @@ from my_routing_agent.utils.math_eval import (
     is_symbolic_math,
     try_prime_check,
 )
-from my_routing_agent.verifier.cascade import CascadeVerifier
+from my_routing_agent.config import (
+    batch_timeout_seconds,
+    parse_allowed_models,
+    request_timeout_seconds,
+    skip_local_inference,
+)
 
 logger = logging.getLogger("hybrid_router")
 
@@ -60,7 +65,18 @@ if not logger.handlers:
 
 LOCAL_ENDPOINT = "http://localhost:11434/api/generate"
 LOCAL_TAGS_ENDPOINT = "http://localhost:11434/api/tags"
-REMOTE_ENDPOINT = "https://api.fireworks.ai/inference/v1/chat/completions"
+
+SKIP_LOCAL = skip_local_inference()
+REQUEST_TIMEOUT_SECONDS = request_timeout_seconds()
+BATCH_TIMEOUT_SECONDS = batch_timeout_seconds()
+
+
+def get_remote_endpoint() -> str:
+    """Fireworks chat-completions URL from FIREWORKS_BASE_URL."""
+    base = os.getenv(
+        "FIREWORKS_BASE_URL", "https://api.fireworks.ai/inference/v1"
+    ).rstrip("/")
+    return f"{base}/chat/completions"
 
 # --- Local-backend safety: health gate, timeouts, memory-aware routing ------------
 # A heavy local model (e.g. qwen2.5:32b) can freeze the whole machine. These bounds
@@ -181,6 +197,76 @@ KNOWN_DEPLOYED_REMOTE_MODELS = frozenset(
     }
 )
 
+_ALLOWED_MODELS_FILTER: frozenset[str] | None = None
+
+
+def configure_allowed_models(*, strict: bool = False) -> str:
+    """
+    Filter remote model catalogs against ALLOWED_MODELS.
+    Returns the primary remote model id to use for batch processing.
+  """
+    global REMOTE_MODEL_CANDIDATES, KNOWN_DEPLOYED_REMOTE_MODELS, REMOTE_MODEL_OPTIONS
+    global DEFAULT_REMOTE_MODEL, REMOTE_VISION_MODEL, _ALLOWED_MODELS_FILTER
+
+    allowed_raw = parse_allowed_models()
+    if not allowed_raw:
+        if strict:
+            raise RuntimeError("ALLOWED_MODELS environment variable is required")
+        return DEFAULT_REMOTE_MODEL
+
+    allowed = frozenset(normalize_model_id(m) for m in allowed_raw if normalize_model_id(m))
+    if not allowed:
+        raise RuntimeError("ALLOWED_MODELS did not contain any valid model ids")
+
+    catalog = {
+        normalize_model_id(m)
+        for m in (
+            *REMOTE_MODEL_CANDIDATES,
+            *KNOWN_DEPLOYED_REMOTE_MODELS,
+            *REMOTE_MODEL_OPTIONS,
+            REMOTE_VISION_MODEL,
+            DEFAULT_REMOTE_MODEL,
+        )
+        if normalize_model_id(m)
+    }
+    overlap = allowed & catalog
+    if not overlap:
+        raise RuntimeError(
+            "ALLOWED_MODELS has no overlap with configured remote models: "
+            f"{sorted(allowed)}"
+        )
+
+    _ALLOWED_MODELS_FILTER = allowed
+    REMOTE_MODEL_CANDIDATES[:] = [
+        m for m in REMOTE_MODEL_CANDIDATES if normalize_model_id(m) in allowed
+    ]
+    for mid in sorted(allowed):
+        if mid not in REMOTE_MODEL_CANDIDATES:
+            REMOTE_MODEL_CANDIDATES.append(mid)
+
+    KNOWN_DEPLOYED_REMOTE_MODELS = frozenset(
+        m for m in KNOWN_DEPLOYED_REMOTE_MODELS if m in allowed
+    ) | frozenset(m for m in allowed if m in catalog)
+
+    REMOTE_MODEL_OPTIONS[:] = [
+        m for m in REMOTE_MODEL_OPTIONS if m == CUSTOM_MODEL_SENTINEL or normalize_model_id(m) in allowed
+    ]
+    if not REMOTE_MODEL_OPTIONS or REMOTE_MODEL_OPTIONS == [CUSTOM_MODEL_SENTINEL]:
+        REMOTE_MODEL_OPTIONS[:] = sorted(allowed) + [CUSTOM_MODEL_SENTINEL]
+
+    primary = next(
+        (normalize_model_id(m) for m in allowed_raw if normalize_model_id(m) in allowed),
+        sorted(allowed)[0],
+    )
+    DEFAULT_REMOTE_MODEL = primary
+    if normalize_model_id(REMOTE_VISION_MODEL) not in allowed:
+        vision_fallback = next(
+            (m for m in allowed if "vision" in m.lower()),
+            primary,
+        )
+        REMOTE_VISION_MODEL = vision_fallback
+    return primary
+
 # Substrings in a Fireworks error body that mean "this model can't be used".
 MODEL_UNAVAILABLE_MARKERS = (
     "not_found",
@@ -234,9 +320,13 @@ def build_remote_candidates(selected_model: str) -> list[str]:
         if normalized and normalized not in ordered and is_known_deployed_model(normalized):
             ordered.append(normalized)
 
+    if _ALLOWED_MODELS_FILTER is not None:
+        ordered = [m for m in ordered if m in _ALLOWED_MODELS_FILTER]
+
     # Unknown selection: still attempt it, but only after the known-good models.
     if selected and selected not in ordered:
-        ordered.append(selected)
+        if _ALLOWED_MODELS_FILTER is None or selected in _ALLOWED_MODELS_FILTER:
+            ordered.append(selected)
 
     return ordered
 
@@ -946,6 +1036,8 @@ def check_local_health(model_id: str, *, ttl: float = LOCAL_HEALTH_TTL_SECONDS) 
 
 def is_local_unavailable(model_id: str) -> bool:
     """Convenience inverse of check_local_health (cached)."""
+    if SKIP_LOCAL:
+        return True
     return not check_local_health(model_id)
 
 
@@ -1037,6 +1129,10 @@ def route_decision(
     ):
         if would_math_intercept(prompt):
             return RouterDecision("LOCAL", score, LOCAL_MATH_REASON, "python-eval", 1.0)
+        if SKIP_LOCAL:
+            return RouterDecision(
+                "REMOTE", score, LOCAL_GREETING_REASON, remote_model, 0.90
+            )
         if local_unavailable:
             return RouterDecision(
                 "LOCAL", score, CANNED_REPLY_REASON, "canned-reply", 0.95
@@ -1056,6 +1152,10 @@ def route_decision(
         )
 
     if should_entropy_gate_input(prompt):
+        if SKIP_LOCAL:
+            return RouterDecision(
+                "REMOTE", score, ENTROPY_GATE_REASON, remote_model, 0.99
+            )
         return RouterDecision(
             "LOCAL", score, ENTROPY_GATE_REASON, "entropy-gate", 0.99
         )
@@ -2103,6 +2203,7 @@ def plan_request(
 def dispatch_instant_trivial(
     prompt: str,
     threshold: int,
+    api_key: str,
     active_local_model: str,
     active_remote_model: str,
     *,
@@ -2123,7 +2224,7 @@ def dispatch_instant_trivial(
             has_image=False,
             active_local_model=active_local_model,
             active_remote_model=active_remote_model,
-            local_unavailable=False,
+            local_unavailable=SKIP_LOCAL,
             has_txt_context=False,
         )
         tracker.mark(
@@ -2149,6 +2250,15 @@ def dispatch_instant_trivial(
             tracker.attach(math_result)
             tracker.log_summary(prompt)
             return math_result
+    if SKIP_LOCAL:
+        return route_and_execute(
+            prompt,
+            threshold,
+            api_key,
+            active_local_model,
+            active_remote_model,
+            timing=timing,
+        )
     return dispatch_instant_greeting(
         prompt,
         threshold,
@@ -2276,8 +2386,8 @@ def route_and_execute(
         local_healthy = True
         local_unavailable = False
     else:
-        local_healthy = not has_image and check_local_health(active_local_model)
-        local_unavailable = not has_image and not local_healthy
+        local_healthy = not has_image and not SKIP_LOCAL and check_local_health(active_local_model)
+        local_unavailable = SKIP_LOCAL or (not has_image and not local_healthy)
     memory_pressure = get_memory_usage() if not has_image else None
 
     if timing:
@@ -2589,6 +2699,8 @@ def _angkor_phantom_execute(
     started: float,
 ) -> RouteResult | None:
     """Try ANGKOR 3-zone + PHANTOM race. Returns None if not ready or not PHANTOM zone."""
+    if SKIP_LOCAL:
+        return None
     global _ANGKOR_SKLEARN_ROUTER, _ANGKOR_PHANTOM_RUNNER, _ANGKOR_ADAPTIVE_THETA
     router = _ANGKOR_SKLEARN_ROUTER
     if router is None or not router.is_ready:
@@ -2773,10 +2885,13 @@ def process_user_request(
         return _attach_orchestration(result, clf)
 
     # Fastest path first — skip FAISS, PHANTOM, verify for greetings and math.
-    if should_skip_expensive_preprocess(prompt, has_txt_context=has_txt_context):
+    if should_skip_expensive_preprocess(prompt, has_txt_context=has_txt_context) and not (
+        SKIP_LOCAL and not would_math_intercept(prompt)
+    ):
         result = dispatch_instant_trivial(
             prompt,
             threshold,
+            api_key,
             active_local_model,
             active_remote_model,
             timing=timing,
@@ -2790,7 +2905,7 @@ def process_user_request(
             has_image=False,
             active_local_model=active_local_model,
             active_remote_model=active_remote_model,
-            local_unavailable=False,
+            local_unavailable=SKIP_LOCAL or is_local_unavailable(active_local_model),
             has_txt_context=has_txt_context,
         )
         if preview_decision.route == "REMOTE":
@@ -2912,10 +3027,10 @@ def _route_vision(
 
     try:
         response = requests.post(
-            REMOTE_ENDPOINT,
+            get_remote_endpoint(),
             headers=headers,
             json=payload,
-            timeout=180,
+            timeout=REQUEST_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
         data = response.json()
@@ -2953,6 +3068,14 @@ def _route_text_local(
     a 404 NOT_FOUND, or an empty body) automatically reroute to the remote Fireworks
     endpoint. A heavy local model is never retried for the same request.
     """
+    if SKIP_LOCAL:
+        return _route_text_remote(
+            prompt,
+            api_key,
+            active_local_model,
+            active_remote_model,
+            started,
+        )
     timeout_s = _local_inference_timeout(active_local_model)
     timeout_ms = timeout_s * 1000
     fallback_reason: str | None = None
@@ -3192,15 +3315,15 @@ def _route_text_remote(
             }
             acquired = False
             try:
-                acquired = _REMOTE_CALL_SEMAPHORE.acquire(timeout=180)
+                acquired = _REMOTE_CALL_SEMAPHORE.acquire(timeout=REQUEST_TIMEOUT_SECONDS)
                 if not acquired:
                     last_detail = "Remote concurrency limit timeout"
                     continue
                 response = requests.post(
-                    REMOTE_ENDPOINT,
+                    get_remote_endpoint(),
                     headers=headers,
                     json=payload,
-                    timeout=180,
+                    timeout=REQUEST_TIMEOUT_SECONDS,
                 )
                 if is_rate_limit_error(response.status_code, response.text):
                     rate_limit_hits += 1
@@ -3216,10 +3339,10 @@ def _route_text_remote(
                         backoff = RATE_LIMIT_BACKOFF_BASE * (2 ** rate_retry)
                         time.sleep(backoff)
                         response = requests.post(
-                            REMOTE_ENDPOINT,
+                            get_remote_endpoint(),
                             headers=headers,
                             json=payload,
-                            timeout=180,
+                            timeout=REQUEST_TIMEOUT_SECONDS,
                         )
                         if not is_rate_limit_error(response.status_code, response.text):
                             break
@@ -3706,6 +3829,14 @@ def _load_saved_api_key() -> str:
     return ""
 
 
+def get_fireworks_api_key() -> str:
+    """Primary: FIREWORKS_API_KEY env; fallback: local dev file."""
+    key = os.getenv("FIREWORKS_API_KEY", "").strip()
+    if key:
+        return key
+    return _load_saved_api_key()
+
+
 def _save_api_key(key: str) -> None:
     path = ROOT_DIR / ".fireworks_api_key"
     try:
@@ -3724,7 +3855,7 @@ def init_session_state() -> None:
     if "_pending_chat" not in st.session_state:
         st.session_state._pending_chat = None
     if "fireworks_api_key" not in st.session_state:
-        st.session_state.fireworks_api_key = _load_saved_api_key()
+        st.session_state.fireworks_api_key = get_fireworks_api_key()
 
 
 def _render_orchestration_caption(result: RouteResult) -> None:
@@ -3784,6 +3915,7 @@ def _handle_pending_chat(
             result = dispatch_instant_trivial(
                 prompt,
                 threshold,
+                api_key,
                 active_local_model,
                 active_remote_model,
                 timing=timing,

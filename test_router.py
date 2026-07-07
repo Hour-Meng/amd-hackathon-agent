@@ -1009,6 +1009,7 @@ def test_2_plus_2_instant_dispatch_under_200ms():
     result = app.dispatch_instant_trivial(
         "what is 2 + 2?",
         THRESHOLD,
+        "",
         LOCAL_MODEL,
         REMOTE_MODEL,
     )

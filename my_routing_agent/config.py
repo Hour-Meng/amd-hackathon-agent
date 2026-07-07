@@ -223,3 +223,32 @@ def load_config() -> AgentConfig:
     config = AgentConfig()
     config.validate()
     return config
+
+
+def parse_allowed_models() -> list[str]:
+    """Parse comma-separated ALLOWED_MODELS env var into normalized model ids."""
+    raw = os.getenv("ALLOWED_MODELS", "").strip()
+    if not raw:
+        return []
+    models: list[str] = []
+    for part in raw.split(","):
+        mid = part.strip()
+        if mid:
+            models.append(mid)
+    return models
+
+
+def skip_local_inference() -> bool:
+    """True when SKIP_LOCAL env disables Ollama / canned local paths."""
+    return os.getenv("SKIP_LOCAL", "").lower() in {"1", "true", "yes"}
+
+
+def request_timeout_seconds() -> float:
+    """Per-request HTTP timeout; defaults to 30s in batch (SKIP_LOCAL) mode."""
+    default = "30" if skip_local_inference() else "180"
+    return float(os.getenv("REQUEST_TIMEOUT_SECONDS", default))
+
+
+def batch_timeout_seconds() -> float:
+    """Total batch pipeline timeout (default 600s / 10 minutes)."""
+    return float(os.getenv("BATCH_TIMEOUT_SECONDS", "600"))
