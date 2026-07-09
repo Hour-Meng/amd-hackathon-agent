@@ -1,0 +1,2253 @@
+[
+  {
+    "task_id": "M001",
+    "prompt": "What is 25 + 37?",
+    "category": "math",
+    "difficulty": "easy",
+    "tags": [
+      "arithmetic"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "62"
+  },
+  {
+    "task_id": "M002",
+    "prompt": "What is 9 × 8?",
+    "category": "math",
+    "difficulty": "easy",
+    "tags": [
+      "arithmetic"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "72"
+  },
+  {
+    "task_id": "M003",
+    "prompt": "What is 144 ÷ 12?",
+    "category": "math",
+    "difficulty": "easy",
+    "tags": [
+      "arithmetic"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "12"
+  },
+  {
+    "task_id": "M004",
+    "prompt": "How many minutes in 3 hours?",
+    "category": "math",
+    "difficulty": "easy",
+    "tags": [
+      "arithmetic"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "180"
+  },
+  {
+    "task_id": "M005",
+    "prompt": "What is 1/4 of 100?",
+    "category": "math",
+    "difficulty": "easy",
+    "tags": [
+      "arithmetic"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "25"
+  },
+  {
+    "task_id": "M006",
+    "prompt": "What is 100 - 47?",
+    "category": "math",
+    "difficulty": "easy",
+    "tags": [
+      "arithmetic"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "53"
+  },
+  {
+    "task_id": "M007",
+    "prompt": "What is 15 × 6?",
+    "category": "math",
+    "difficulty": "easy",
+    "tags": [
+      "arithmetic"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "90"
+  },
+  {
+    "task_id": "M008",
+    "prompt": "What is 250 + 175?",
+    "category": "math",
+    "difficulty": "easy",
+    "tags": [
+      "arithmetic"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "425"
+  },
+  {
+    "task_id": "M009",
+    "prompt": "What is 81 ÷ 9?",
+    "category": "math",
+    "difficulty": "easy",
+    "tags": [
+      "arithmetic"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "9"
+  },
+  {
+    "task_id": "M010",
+    "prompt": "What is 7²?",
+    "category": "math",
+    "difficulty": "easy",
+    "tags": [
+      "arithmetic"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "49"
+  },
+  {
+    "task_id": "M011",
+    "prompt": "A train travels 240 km in 3 hours. What is its speed in km/h?",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "80"
+  },
+  {
+    "task_id": "M012",
+    "prompt": "What is 15% of 200?",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "30"
+  },
+  {
+    "task_id": "M013",
+    "prompt": "If 2x + 5 = 15, what is x?",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "5"
+  },
+  {
+    "task_id": "M014",
+    "prompt": "What is the area of a circle with radius 5 cm? Use π = 3.14",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "78.5"
+  },
+  {
+    "task_id": "M015",
+    "prompt": "How many seconds are there in 2.5 hours?",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "9000"
+  },
+  {
+    "task_id": "M016",
+    "prompt": "If you buy 3 apples for $0.50 each, how much change from $5?",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "3.50"
+  },
+  {
+    "task_id": "M017",
+    "prompt": "What is the median of [3, 7, 9, 2, 5]?",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "5"
+  },
+  {
+    "task_id": "M018",
+    "prompt": "A rectangle has length 12 and width 8. What is its perimeter?",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "40"
+  },
+  {
+    "task_id": "M019",
+    "prompt": "What is 2³ + 3²?",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "17"
+  },
+  {
+    "task_id": "M020",
+    "prompt": "If a recipe for 4 people needs 2 eggs, how many eggs for 10 people?",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "5"
+  },
+  {
+    "task_id": "M021",
+    "prompt": "What is 0.25 as a fraction in simplest form?",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "1/4"
+  },
+  {
+    "task_id": "M022",
+    "prompt": "A car travels 60 miles per hour. How far in 45 minutes?",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "45"
+  },
+  {
+    "task_id": "M023",
+    "prompt": "What is the square root of 144?",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "12"
+  },
+  {
+    "task_id": "M024",
+    "prompt": "Simplify: 3(2x + 4) - 2x",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "4x + 12"
+  },
+  {
+    "task_id": "M025",
+    "prompt": "If temperature is 30°C, what is it in Fahrenheit? F = C × 9/5 + 32",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "86"
+  },
+  {
+    "task_id": "M026",
+    "prompt": "What is 5! (5 factorial)?",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "120"
+  },
+  {
+    "task_id": "M027",
+    "prompt": "A pizza is cut into 8 slices. You eat 3. What fraction remains?",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "5/8"
+  },
+  {
+    "task_id": "M028",
+    "prompt": "What is the volume of a cube with side 3 cm?",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "27"
+  },
+  {
+    "task_id": "M029",
+    "prompt": "If you roll a fair 6-sided die, probability of rolling an even number?",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "1/2"
+  },
+  {
+    "task_id": "M030",
+    "prompt": "What is 10% of 50% of 200?",
+    "category": "math",
+    "difficulty": "medium",
+    "tags": [
+      "arithmetic",
+      "algebra"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "10"
+  },
+  {
+    "task_id": "M031",
+    "prompt": "Probability of rolling two sixes on two dice?",
+    "category": "math",
+    "difficulty": "hard",
+    "tags": [
+      "word-problem"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "1/36"
+  },
+  {
+    "task_id": "M032",
+    "prompt": "If $1000 is invested at 5% annual compound interest for 10 years, what is the final amount? Round to nearest dollar.",
+    "category": "math",
+    "difficulty": "hard",
+    "tags": [
+      "word-problem"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "1629"
+  },
+  {
+    "task_id": "M033",
+    "prompt": "Standard deviation of [4, 8, 6, 5, 3] rounded to 2 decimal places.",
+    "category": "math",
+    "difficulty": "hard",
+    "tags": [
+      "word-problem"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "1.87"
+  },
+  {
+    "task_id": "M034",
+    "prompt": "Solve log₂(32) = ?",
+    "category": "math",
+    "difficulty": "hard",
+    "tags": [
+      "word-problem"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "5"
+  },
+  {
+    "task_id": "M035",
+    "prompt": "If sin(x) = 0.5 and x is between 0 and 90°, what is x in degrees?",
+    "category": "math",
+    "difficulty": "hard",
+    "tags": [
+      "word-problem"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "30"
+  },
+  {
+    "task_id": "M036",
+    "prompt": "How many distinct ways can you arrange the letters in the word MATH?",
+    "category": "math",
+    "difficulty": "hard",
+    "tags": [
+      "word-problem"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "24"
+  },
+  {
+    "task_id": "M037",
+    "prompt": "What is the sum of the first 50 positive integers?",
+    "category": "math",
+    "difficulty": "hard",
+    "tags": [
+      "word-problem"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "1275"
+  },
+  {
+    "task_id": "M038",
+    "prompt": "A ball is thrown upward at 20 m/s. How high does it go? Use g = 10 m/s²",
+    "category": "math",
+    "difficulty": "hard",
+    "tags": [
+      "word-problem"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "20"
+  },
+  {
+    "task_id": "M039",
+    "prompt": "What is 7 modulo 3?",
+    "category": "math",
+    "difficulty": "hard",
+    "tags": [
+      "word-problem"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "1"
+  },
+  {
+    "task_id": "M040",
+    "prompt": "If f(x) = 2x² + 3x - 2, what is f(3)?",
+    "category": "math",
+    "difficulty": "hard",
+    "tags": [
+      "word-problem"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "25"
+  },
+  {
+    "task_id": "M041",
+    "prompt": "How many degrees are each interior angle of a regular pentagon?",
+    "category": "math",
+    "difficulty": "hard",
+    "tags": [
+      "word-problem"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "108"
+  },
+  {
+    "task_id": "M042",
+    "prompt": "What is the greatest common divisor of 48 and 72?",
+    "category": "math",
+    "difficulty": "hard",
+    "tags": [
+      "word-problem"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "24"
+  },
+  {
+    "task_id": "M043",
+    "prompt": "What is the least common multiple of 6 and 10?",
+    "category": "math",
+    "difficulty": "hard",
+    "tags": [
+      "word-problem"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "30"
+  },
+  {
+    "task_id": "M044",
+    "prompt": "If the probability of rain is 0.3, what is the probability of no rain 3 days in a row assuming independence?",
+    "category": "math",
+    "difficulty": "hard",
+    "tags": [
+      "word-problem"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "0.343"
+  },
+  {
+    "task_id": "M045",
+    "prompt": "A triangle has sides 3, 4, 5. What is its area?",
+    "category": "math",
+    "difficulty": "hard",
+    "tags": [
+      "word-problem"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "6"
+  },
+  {
+    "task_id": "M046",
+    "prompt": "What is the derivative of f(x) = 3x³ - 2x² + 5x - 1?",
+    "category": "math",
+    "difficulty": "expert",
+    "tags": [
+      "calculus"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "9x² - 4x + 5"
+  },
+  {
+    "task_id": "M047",
+    "prompt": "Integrate ∫(2x + 3) dx from 0 to 4.",
+    "category": "math",
+    "difficulty": "expert",
+    "tags": [
+      "calculus"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "28"
+  },
+  {
+    "task_id": "M048",
+    "prompt": "If A = [[1,2],[3,4]], what is the determinant of A?",
+    "category": "math",
+    "difficulty": "expert",
+    "tags": [
+      "calculus"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "-2"
+  },
+  {
+    "task_id": "M049",
+    "prompt": "What is the limit of (x² - 1)/(x - 1) as x approaches 1?",
+    "category": "math",
+    "difficulty": "expert",
+    "tags": [
+      "calculus"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "2"
+  },
+  {
+    "task_id": "M050",
+    "prompt": "A rabbit population doubles every 3 months. Starting with 2 rabbits, how many after 2 years?",
+    "category": "math",
+    "difficulty": "expert",
+    "tags": [
+      "calculus"
+    ],
+    "answer_type": "numeric",
+    "expected_answer": "2048"
+  },
+  {
+    "task_id": "L001",
+    "prompt": "All birds fly. A penguin is a bird. Does a penguin fly?",
+    "category": "logic",
+    "difficulty": "easy",
+    "tags": [
+      "deduction"
+    ],
+    "answer_type": "text",
+    "expected_answer": "No, penguins are birds but cannot fly"
+  },
+  {
+    "task_id": "L002",
+    "prompt": "What comes next: 2, 4, 8, 16, ?",
+    "category": "logic",
+    "difficulty": "easy",
+    "tags": [
+      "deduction"
+    ],
+    "answer_type": "text",
+    "expected_answer": "32"
+  },
+  {
+    "task_id": "L003",
+    "prompt": "If it is raining, the ground is wet. The ground is wet. Did it rain?",
+    "category": "logic",
+    "difficulty": "easy",
+    "tags": [
+      "deduction"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Not necessarily"
+  },
+  {
+    "task_id": "L004",
+    "prompt": "Which number does not belong: 2, 3, 5, 7, 10?",
+    "category": "logic",
+    "difficulty": "easy",
+    "tags": [
+      "deduction"
+    ],
+    "answer_type": "text",
+    "expected_answer": "10"
+  },
+  {
+    "task_id": "L005",
+    "prompt": "You see a house with all four windows facing south. A bear walks by. What color is the bear?",
+    "category": "logic",
+    "difficulty": "easy",
+    "tags": [
+      "deduction"
+    ],
+    "answer_type": "text",
+    "expected_answer": "White"
+  },
+  {
+    "task_id": "L006",
+    "prompt": "If A > B and B > C, then A ? C",
+    "category": "logic",
+    "difficulty": "easy",
+    "tags": [
+      "deduction"
+    ],
+    "answer_type": "text",
+    "expected_answer": "A > C"
+  },
+  {
+    "task_id": "L007",
+    "prompt": "What day comes 3 days after Tuesday?",
+    "category": "logic",
+    "difficulty": "easy",
+    "tags": [
+      "deduction"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Friday"
+  },
+  {
+    "task_id": "L008",
+    "prompt": "A farmer has 15 sheep. All but 8 die. How many are left?",
+    "category": "logic",
+    "difficulty": "easy",
+    "tags": [
+      "deduction"
+    ],
+    "answer_type": "text",
+    "expected_answer": "8"
+  },
+  {
+    "task_id": "L009",
+    "prompt": "All A are B. All B are C. Therefore, all A are C. Is this valid?",
+    "category": "logic",
+    "difficulty": "medium",
+    "tags": [
+      "puzzle"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Yes, it is valid"
+  },
+  {
+    "task_id": "L010",
+    "prompt": "If you have two coins that add up to 30 cents and one of them is not a nickel, what coins are they?",
+    "category": "logic",
+    "difficulty": "medium",
+    "tags": [
+      "puzzle"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Quarter and nickel"
+  },
+  {
+    "task_id": "L011",
+    "prompt": "A bat and a ball cost $1.10. The bat costs $1 more than the ball. How much does the ball cost?",
+    "category": "logic",
+    "difficulty": "medium",
+    "tags": [
+      "puzzle"
+    ],
+    "answer_type": "text",
+    "expected_answer": "5 cents"
+  },
+  {
+    "task_id": "L012",
+    "prompt": "Three light switches control a bulb in another room. You can only enter the room once. How do you determine which switch controls the bulb?",
+    "category": "logic",
+    "difficulty": "medium",
+    "tags": [
+      "puzzle"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Turn one on, leave it. Turn another on briefly then off. Enter room. On = first, warm = second, off = third"
+  },
+  {
+    "task_id": "L013",
+    "prompt": "Mary's father has 5 daughters: Nana, Nene, Nini, Nono. What is the fifth daughter's name?",
+    "category": "logic",
+    "difficulty": "medium",
+    "tags": [
+      "puzzle"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Mary"
+  },
+  {
+    "task_id": "L014",
+    "prompt": "What is the next letter: J, F, M, A, M, J, ?",
+    "category": "logic",
+    "difficulty": "medium",
+    "tags": [
+      "puzzle"
+    ],
+    "answer_type": "text",
+    "expected_answer": "J"
+  },
+  {
+    "task_id": "L015",
+    "prompt": "If you rearrange the letters CIFAIPC, you get the name of a what?",
+    "category": "logic",
+    "difficulty": "medium",
+    "tags": [
+      "puzzle"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Pacific"
+  },
+  {
+    "task_id": "L016",
+    "prompt": "A clock shows 3:15. What is the angle between the hour and minute hand?",
+    "category": "logic",
+    "difficulty": "medium",
+    "tags": [
+      "puzzle"
+    ],
+    "answer_type": "text",
+    "expected_answer": "7.5 degrees"
+  },
+  {
+    "task_id": "L017",
+    "prompt": "You have a 3-gallon jug and a 5-gallon jug. How do you get 4 gallons?",
+    "category": "logic",
+    "difficulty": "medium",
+    "tags": [
+      "puzzle"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Fill 5, pour to 3 (2 left in 5). Empty 3, pour 2 into 3. Fill 5, pour to 3 (1 left in 5). 4 = 5-1"
+  },
+  {
+    "task_id": "L018",
+    "prompt": "Which switch turns on which light: Two switches, two lights. One switch toggles both, the other toggles only one.",
+    "category": "logic",
+    "difficulty": "medium",
+    "tags": [
+      "puzzle"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Turn both on. If both on, first switch toggles both. Turn one off - if that light goes off, second switch controls it."
+  },
+  {
+    "task_id": "L019",
+    "prompt": "If a doctor gives you three pills and tells you to take one every half hour, how long will they last?",
+    "category": "logic",
+    "difficulty": "medium",
+    "tags": [
+      "puzzle"
+    ],
+    "answer_type": "text",
+    "expected_answer": "1 hour"
+  },
+  {
+    "task_id": "L020",
+    "prompt": "A rooster lays an egg on top of a barn. Which way does it roll?",
+    "category": "logic",
+    "difficulty": "medium",
+    "tags": [
+      "puzzle"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Roosters don't lay eggs"
+  },
+  {
+    "task_id": "L021",
+    "prompt": "You walk into a dark room with a match, a lamp, a candle, and a fireplace. What do you light first?",
+    "category": "logic",
+    "difficulty": "medium",
+    "tags": [
+      "puzzle"
+    ],
+    "answer_type": "text",
+    "expected_answer": "The match"
+  },
+  {
+    "task_id": "L022",
+    "prompt": "What is the missing number: 1, 1, 2, 3, 5, 8, 13, ?",
+    "category": "logic",
+    "difficulty": "medium",
+    "tags": [
+      "puzzle"
+    ],
+    "answer_type": "text",
+    "expected_answer": "21"
+  },
+  {
+    "task_id": "L023",
+    "prompt": "There are 12 coins. One is counterfeit (heavier). Using a balance scale with only 3 weighings, how do you find the fake coin?",
+    "category": "logic",
+    "difficulty": "hard",
+    "tags": [
+      "brainteaser"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Divide into 3 groups of 4. Weigh 4 vs 4. Heavier side has fake. Divide that 4 into 2+2. Weigh them. Heavier pair. Weigh those 2 against each other. Heavier is fake."
+  },
+  {
+    "task_id": "L024",
+    "prompt": "A man pushes his car to a hotel and tells the owner he's bankrupt. Why?",
+    "category": "logic",
+    "difficulty": "hard",
+    "tags": [
+      "brainteaser"
+    ],
+    "answer_type": "text",
+    "expected_answer": "He's playing Monopoly"
+  },
+  {
+    "task_id": "L025",
+    "prompt": "You have 10 bags of coins. Each bag has 10 coins. One bag has all counterfeit coins weighing 9g each instead of 10g. Using one weighing, find the fake bag.",
+    "category": "logic",
+    "difficulty": "hard",
+    "tags": [
+      "brainteaser"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Take 1 coin from bag 1, 2 from bag 2, etc. Weigh all. Expected = 550g. Difference in grams = bag number with fakes."
+  },
+  {
+    "task_id": "L026",
+    "prompt": "Five pirates must divide 100 gold coins. The senior pirate proposes a split. If at least half vote yes, it passes. Otherwise he dies and the next senior proposes. How does the senior maximize his share?",
+    "category": "logic",
+    "difficulty": "hard",
+    "tags": [
+      "brainteaser"
+    ],
+    "answer_type": "text",
+    "expected_answer": "98 for senior, 1 for 3rd senior, 1 for 5th. They vote yes because they'd get nothing if senior dies."
+  },
+  {
+    "task_id": "L027",
+    "prompt": "You are on an island with knights (always tell truth) and knaves (always lie). You meet A and B. A says: We are both knaves. What are A and B?",
+    "category": "logic",
+    "difficulty": "hard",
+    "tags": [
+      "brainteaser"
+    ],
+    "answer_type": "text",
+    "expected_answer": "A is knave, B is knight"
+  },
+  {
+    "task_id": "L028",
+    "prompt": "How many times a day do the hands of a clock overlap?",
+    "category": "logic",
+    "difficulty": "hard",
+    "tags": [
+      "brainteaser"
+    ],
+    "answer_type": "text",
+    "expected_answer": "22"
+  },
+  {
+    "task_id": "L029",
+    "prompt": "Three gods: True (truth), False (lie), Random (random). Three yes/no questions to determine who is who. How?",
+    "category": "logic",
+    "difficulty": "hard",
+    "tags": [
+      "brainteaser"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Complex - ask 'Is it true that you are True if and only if X?' etc."
+  },
+  {
+    "task_id": "L030",
+    "prompt": "You have a 7-minute and 4-minute hourglass. How do you measure exactly 9 minutes?",
+    "category": "logic",
+    "difficulty": "hard",
+    "tags": [
+      "brainteaser"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Start both. When 4 runs out, flip it (8 min total elapsed? Complex)"
+  },
+  {
+    "task_id": "L031",
+    "prompt": "There are 100 prisoners and a warden. A room has a switch. Prisoners can enter one at a time. How do all 100 declare they've been in the room at least once?",
+    "category": "logic",
+    "difficulty": "hard",
+    "tags": [
+      "brainteaser"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Designate one counter. If counter sees switch down, flip up and count. Others flip down only once if they haven't before."
+  },
+  {
+    "task_id": "L032",
+    "prompt": "A census taker asks a woman: How many children? She says 3. Ages? Product is 36. Sum equals the house number. Census taker needs more info. She says the oldest plays piano. Ages?",
+    "category": "logic",
+    "difficulty": "hard",
+    "tags": [
+      "brainteaser"
+    ],
+    "answer_type": "text",
+    "expected_answer": "9, 2, 2"
+  },
+  {
+    "task_id": "L033",
+    "prompt": "100 blue-eyed and 100 brown-eyed islanders. If someone knows their own eye color, they leave at midnight. An outsider says 'At least one of you has blue eyes.' What happens?",
+    "category": "logic",
+    "difficulty": "expert",
+    "tags": [
+      "advanced"
+    ],
+    "answer_type": "text",
+    "expected_answer": "All 100 blue-eyed leave on day 100"
+  },
+  {
+    "task_id": "L034",
+    "prompt": "There are two doors. One leads to treasure, one to certain death. Two guards. One always lies, one always tells truth. You can ask one question to one guard. What do you ask?",
+    "category": "logic",
+    "difficulty": "expert",
+    "tags": [
+      "advanced"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Ask: 'What would the other guard say is the safe door?' Then choose the opposite."
+  },
+  {
+    "task_id": "L035",
+    "prompt": "You have 25 horses and a racetrack that can race 5 at a time. What is the minimum number of races to find the top 3 fastest?",
+    "category": "logic",
+    "difficulty": "expert",
+    "tags": [
+      "advanced"
+    ],
+    "answer_type": "text",
+    "expected_answer": "7 races"
+  },
+  {
+    "task_id": "T001",
+    "prompt": "What planet is known as the Red Planet?",
+    "category": "trivia",
+    "difficulty": "easy",
+    "tags": [
+      "general"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Mars"
+  },
+  {
+    "task_id": "T002",
+    "prompt": "Who wrote Romeo and Juliet?",
+    "category": "trivia",
+    "difficulty": "easy",
+    "tags": [
+      "general"
+    ],
+    "answer_type": "text",
+    "expected_answer": "William Shakespeare"
+  },
+  {
+    "task_id": "T003",
+    "prompt": "What is the largest ocean on Earth?",
+    "category": "trivia",
+    "difficulty": "easy",
+    "tags": [
+      "general"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Pacific Ocean"
+  },
+  {
+    "task_id": "T004",
+    "prompt": "How many continents are there?",
+    "category": "trivia",
+    "difficulty": "easy",
+    "tags": [
+      "general"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Seven"
+  },
+  {
+    "task_id": "T005",
+    "prompt": "What is the freezing point of water in Celsius?",
+    "category": "trivia",
+    "difficulty": "easy",
+    "tags": [
+      "general"
+    ],
+    "answer_type": "text",
+    "expected_answer": "0"
+  },
+  {
+    "task_id": "T006",
+    "prompt": "What gas do plants absorb from the atmosphere?",
+    "category": "trivia",
+    "difficulty": "easy",
+    "tags": [
+      "general"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Carbon dioxide"
+  },
+  {
+    "task_id": "T007",
+    "prompt": "What is the chemical symbol for gold?",
+    "category": "trivia",
+    "difficulty": "easy",
+    "tags": [
+      "general"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Au"
+  },
+  {
+    "task_id": "T008",
+    "prompt": "Who painted the Mona Lisa?",
+    "category": "trivia",
+    "difficulty": "easy",
+    "tags": [
+      "general"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Leonardo da Vinci"
+  },
+  {
+    "task_id": "T009",
+    "prompt": "What is the fastest land animal?",
+    "category": "trivia",
+    "difficulty": "easy",
+    "tags": [
+      "general"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Cheetah"
+  },
+  {
+    "task_id": "T010",
+    "prompt": "How many days in a leap year?",
+    "category": "trivia",
+    "difficulty": "easy",
+    "tags": [
+      "general"
+    ],
+    "answer_type": "text",
+    "expected_answer": "366"
+  },
+  {
+    "task_id": "T011",
+    "prompt": "In what year was the Berlin Wall built?",
+    "category": "trivia",
+    "difficulty": "medium",
+    "tags": [
+      "geography",
+      "history"
+    ],
+    "answer_type": "text",
+    "expected_answer": "1961"
+  },
+  {
+    "task_id": "T012",
+    "prompt": "What is the capital of Mongolia?",
+    "category": "trivia",
+    "difficulty": "medium",
+    "tags": [
+      "geography",
+      "history"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Ulaanbaatar"
+  },
+  {
+    "task_id": "T013",
+    "prompt": "What element has the chemical symbol Fe?",
+    "category": "trivia",
+    "difficulty": "medium",
+    "tags": [
+      "geography",
+      "history"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Iron"
+  },
+  {
+    "task_id": "T014",
+    "prompt": "Who was the first person to walk on the Moon?",
+    "category": "trivia",
+    "difficulty": "medium",
+    "tags": [
+      "geography",
+      "history"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Neil Armstrong"
+  },
+  {
+    "task_id": "T015",
+    "prompt": "What is the longest river in the world?",
+    "category": "trivia",
+    "difficulty": "medium",
+    "tags": [
+      "geography",
+      "history"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Nile"
+  },
+  {
+    "task_id": "T016",
+    "prompt": "Which country has the largest population?",
+    "category": "trivia",
+    "difficulty": "medium",
+    "tags": [
+      "geography",
+      "history"
+    ],
+    "answer_type": "text",
+    "expected_answer": "India"
+  },
+  {
+    "task_id": "T017",
+    "prompt": "What is the boiling point of water in Fahrenheit?",
+    "category": "trivia",
+    "difficulty": "medium",
+    "tags": [
+      "geography",
+      "history"
+    ],
+    "answer_type": "text",
+    "expected_answer": "212"
+  },
+  {
+    "task_id": "T018",
+    "prompt": "Who developed the theory of general relativity?",
+    "category": "trivia",
+    "difficulty": "medium",
+    "tags": [
+      "geography",
+      "history"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Albert Einstein"
+  },
+  {
+    "task_id": "T019",
+    "prompt": "What year did World War II end?",
+    "category": "trivia",
+    "difficulty": "medium",
+    "tags": [
+      "geography",
+      "history"
+    ],
+    "answer_type": "text",
+    "expected_answer": "1945"
+  },
+  {
+    "task_id": "T020",
+    "prompt": "What is the smallest country in the world by area?",
+    "category": "trivia",
+    "difficulty": "medium",
+    "tags": [
+      "geography",
+      "history"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Vatican City"
+  },
+  {
+    "task_id": "T021",
+    "prompt": "What language has the most native speakers?",
+    "category": "trivia",
+    "difficulty": "medium",
+    "tags": [
+      "geography",
+      "history"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Mandarin Chinese"
+  },
+  {
+    "task_id": "T022",
+    "prompt": "Which animal is known as the King of the Jungle?",
+    "category": "trivia",
+    "difficulty": "medium",
+    "tags": [
+      "geography",
+      "history"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Lion"
+  },
+  {
+    "task_id": "T023",
+    "prompt": "What is the speed of light approximately in km/s?",
+    "category": "trivia",
+    "difficulty": "medium",
+    "tags": [
+      "geography",
+      "history"
+    ],
+    "answer_type": "text",
+    "expected_answer": "299,792"
+  },
+  {
+    "task_id": "T024",
+    "prompt": "Who wrote The Great Gatsby?",
+    "category": "trivia",
+    "difficulty": "medium",
+    "tags": [
+      "geography",
+      "history"
+    ],
+    "answer_type": "text",
+    "expected_answer": "F. Scott Fitzgerald"
+  },
+  {
+    "task_id": "T025",
+    "prompt": "What is the largest desert in the world (by area)?",
+    "category": "trivia",
+    "difficulty": "medium",
+    "tags": [
+      "geography",
+      "history"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Antarctic Desert"
+  },
+  {
+    "task_id": "T026",
+    "prompt": "What is the chemical formula for water?",
+    "category": "trivia",
+    "difficulty": "medium",
+    "tags": [
+      "geography",
+      "history"
+    ],
+    "answer_type": "text",
+    "expected_answer": "H2O"
+  },
+  {
+    "task_id": "T027",
+    "prompt": "Which African country has the most UNESCO World Heritage sites?",
+    "category": "trivia",
+    "difficulty": "hard",
+    "tags": [
+      "niche"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Ethiopia"
+  },
+  {
+    "task_id": "T028",
+    "prompt": "What year was the first Nobel Prize awarded?",
+    "category": "trivia",
+    "difficulty": "hard",
+    "tags": [
+      "niche"
+    ],
+    "answer_type": "text",
+    "expected_answer": "1901"
+  },
+  {
+    "task_id": "T029",
+    "prompt": "What is the only letter not appearing in any U.S. state name?",
+    "category": "trivia",
+    "difficulty": "hard",
+    "tags": [
+      "niche"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Q"
+  },
+  {
+    "task_id": "T030",
+    "prompt": "Which element was discovered first: uranium or plutonium?",
+    "category": "trivia",
+    "difficulty": "hard",
+    "tags": [
+      "niche"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Uranium"
+  },
+  {
+    "task_id": "T031",
+    "prompt": "What is the deepest point in the ocean called?",
+    "category": "trivia",
+    "difficulty": "hard",
+    "tags": [
+      "niche"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Mariana Trench"
+  },
+  {
+    "task_id": "T032",
+    "prompt": "Who invented the World Wide Web?",
+    "category": "trivia",
+    "difficulty": "hard",
+    "tags": [
+      "niche"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Tim Berners-Lee"
+  },
+  {
+    "task_id": "T033",
+    "prompt": "What is the collective noun for a group of flamingos?",
+    "category": "trivia",
+    "difficulty": "hard",
+    "tags": [
+      "niche"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Flamboyance"
+  },
+  {
+    "task_id": "T034",
+    "prompt": "What is the only planet that rotates clockwise?",
+    "category": "trivia",
+    "difficulty": "hard",
+    "tags": [
+      "niche"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Venus"
+  },
+  {
+    "task_id": "T035",
+    "prompt": "What year was the United Nations founded?",
+    "category": "trivia",
+    "difficulty": "hard",
+    "tags": [
+      "niche"
+    ],
+    "answer_type": "text",
+    "expected_answer": "1945"
+  },
+  {
+    "task_id": "T036",
+    "prompt": "Which country consumes the most chocolate per capita?",
+    "category": "trivia",
+    "difficulty": "hard",
+    "tags": [
+      "niche"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Switzerland"
+  },
+  {
+    "task_id": "T037",
+    "prompt": "What is the longest-running Broadway show?",
+    "category": "trivia",
+    "difficulty": "hard",
+    "tags": [
+      "niche"
+    ],
+    "answer_type": "text",
+    "expected_answer": "The Phantom of the Opera"
+  },
+  {
+    "task_id": "T038",
+    "prompt": "Who is the only person to win a Nobel Prize in two different scientific fields?",
+    "category": "trivia",
+    "difficulty": "expert",
+    "tags": [
+      "obscure"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Marie Curie (Physics 1903, Chemistry 1911)"
+  },
+  {
+    "task_id": "T039",
+    "prompt": "What is the rarest blood type in the human population?",
+    "category": "trivia",
+    "difficulty": "expert",
+    "tags": [
+      "obscure"
+    ],
+    "answer_type": "text",
+    "expected_answer": "AB-negative"
+  },
+  {
+    "task_id": "T040",
+    "prompt": "Which country has time zones 26 hours apart? (largest time zone difference within one country)",
+    "category": "trivia",
+    "difficulty": "expert",
+    "tags": [
+      "obscure"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Russia"
+  },
+  {
+    "task_id": "F001",
+    "prompt": "What is the capital of France?",
+    "category": "facts",
+    "difficulty": "easy",
+    "tags": [
+      "science"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Paris"
+  },
+  {
+    "task_id": "F002",
+    "prompt": "Is the sun a star?",
+    "category": "facts",
+    "difficulty": "easy",
+    "tags": [
+      "science"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Yes"
+  },
+  {
+    "task_id": "F003",
+    "prompt": "How many legs does a spider have?",
+    "category": "facts",
+    "difficulty": "easy",
+    "tags": [
+      "science"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Eight"
+  },
+  {
+    "task_id": "F004",
+    "prompt": "What is the largest mammal on Earth?",
+    "category": "facts",
+    "difficulty": "easy",
+    "tags": [
+      "science"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Blue whale"
+  },
+  {
+    "task_id": "F005",
+    "prompt": "What is the primary source of energy for Earth?",
+    "category": "facts",
+    "difficulty": "easy",
+    "tags": [
+      "science"
+    ],
+    "answer_type": "text",
+    "expected_answer": "The Sun"
+  },
+  {
+    "task_id": "F006",
+    "prompt": "Is water wet?",
+    "category": "facts",
+    "difficulty": "easy",
+    "tags": [
+      "science"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Yes"
+  },
+  {
+    "task_id": "F007",
+    "prompt": "What color is the sky on a clear day?",
+    "category": "facts",
+    "difficulty": "easy",
+    "tags": [
+      "science"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Blue"
+  },
+  {
+    "task_id": "F008",
+    "prompt": "Do fish have eyelids?",
+    "category": "facts",
+    "difficulty": "easy",
+    "tags": [
+      "science"
+    ],
+    "answer_type": "text",
+    "expected_answer": "No"
+  },
+  {
+    "task_id": "F009",
+    "prompt": "Which is larger: the Sahara Desert or the Gobi Desert?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Sahara"
+  },
+  {
+    "task_id": "F010",
+    "prompt": "What is photosynthesis?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Process where plants convert sunlight, water and CO2 into glucose and oxygen"
+  },
+  {
+    "task_id": "F011",
+    "prompt": "What causes the phases of the Moon?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "The changing angle of sunlight hitting the Moon as it orbits Earth"
+  },
+  {
+    "task_id": "F012",
+    "prompt": "How many bones are in the adult human body?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "206"
+  },
+  {
+    "task_id": "F013",
+    "prompt": "Which planet has the most moons?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Saturn"
+  },
+  {
+    "task_id": "F014",
+    "prompt": "What is the difference between a virus and a bacterium?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Bacteria are living cells; viruses need a host to replicate"
+  },
+  {
+    "task_id": "F015",
+    "prompt": "Why do leaves change color in autumn?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Chlorophyll breaks down, revealing other pigments"
+  },
+  {
+    "task_id": "F016",
+    "prompt": "What is the powerhouse of the cell?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Mitochondria"
+  },
+  {
+    "task_id": "F017",
+    "prompt": "How does a magnifying glass work?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Convex lens bends light rays to converge at a focal point"
+  },
+  {
+    "task_id": "F018",
+    "prompt": "What is the Richter scale used for?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Measuring earthquake magnitude"
+  },
+  {
+    "task_id": "F019",
+    "prompt": "What is the difference between weather and climate?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Weather is short-term; climate is long-term patterns"
+  },
+  {
+    "task_id": "F020",
+    "prompt": "Why does ice float on water?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Ice is less dense because water expands when frozen"
+  },
+  {
+    "task_id": "F021",
+    "prompt": "What is the function of red blood cells?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Carry oxygen from lungs to body tissues"
+  },
+  {
+    "task_id": "F022",
+    "prompt": "Which gas makes up most of Earth's atmosphere?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Nitrogen"
+  },
+  {
+    "task_id": "F023",
+    "prompt": "What is a mammal?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Warm-blooded animal with hair/fur that produces milk"
+  },
+  {
+    "task_id": "F024",
+    "prompt": "What causes a rainbow?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Light refraction, dispersion and reflection in water droplets"
+  },
+  {
+    "task_id": "F025",
+    "prompt": "Why do we have leap years?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "To correct for the extra ~6 hours in Earth's orbit"
+  },
+  {
+    "task_id": "F026",
+    "prompt": "What is the smallest bone in the human body?",
+    "category": "facts",
+    "difficulty": "medium",
+    "tags": [
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Stapes (in the ear)"
+  },
+  {
+    "task_id": "F027",
+    "prompt": "How does the water cycle affect hurricane formation?",
+    "category": "facts",
+    "difficulty": "hard",
+    "tags": [
+      "science",
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Warm water evaporates, rises, condenses releasing latent heat, lowering pressure, drawing more air"
+  },
+  {
+    "task_id": "F028",
+    "prompt": "Explain the difference between bacterial and viral infections in terms of treatment.",
+    "category": "facts",
+    "difficulty": "hard",
+    "tags": [
+      "science",
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Bacterial: treated with antibiotics. Viral: treated with antivirals or vaccines, antibiotics don't work"
+  },
+  {
+    "task_id": "F029",
+    "prompt": "How does a nuclear reactor generate electricity?",
+    "category": "facts",
+    "difficulty": "hard",
+    "tags": [
+      "science",
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Nuclear fission heats water → steam → turns turbine → generator produces electricity"
+  },
+  {
+    "task_id": "F030",
+    "prompt": "What is the greenhouse effect and how does it differ from the enhanced greenhouse effect?",
+    "category": "facts",
+    "difficulty": "hard",
+    "tags": [
+      "science",
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Natural: atmosphere traps some heat. Enhanced: human emissions increase trapping, causing global warming"
+  },
+  {
+    "task_id": "F031",
+    "prompt": "Why does the sky appear blue and sunsets appear red?",
+    "category": "facts",
+    "difficulty": "hard",
+    "tags": [
+      "science",
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Rayleigh scattering: blue light scatters more. At sunset, light travels further through atmosphere, blue scatters away, red reaches us"
+  },
+  {
+    "task_id": "F032",
+    "prompt": "How does vaccination work at the cellular level?",
+    "category": "facts",
+    "difficulty": "hard",
+    "tags": [
+      "science",
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Introduces antigen → B cells produce antibodies → memory cells created → faster response on real infection"
+  },
+  {
+    "task_id": "F033",
+    "prompt": "What is the difference between DNA and RNA?",
+    "category": "facts",
+    "difficulty": "hard",
+    "tags": [
+      "science",
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "DNA: double-stranded, deoxyribose, thymine. RNA: single-stranded, ribose, uracil"
+  },
+  {
+    "task_id": "F034",
+    "prompt": "How do batteries produce electricity?",
+    "category": "facts",
+    "difficulty": "hard",
+    "tags": [
+      "science",
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Chemical reaction between anode and cathode via electrolyte creates electron flow through external circuit"
+  },
+  {
+    "task_id": "F035",
+    "prompt": "What causes tides on Earth?",
+    "category": "facts",
+    "difficulty": "hard",
+    "tags": [
+      "science",
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Gravitational pull of the Moon and Sun, combined with Earth's rotation"
+  },
+  {
+    "task_id": "F036",
+    "prompt": "Explain the Doppler effect.",
+    "category": "facts",
+    "difficulty": "hard",
+    "tags": [
+      "science",
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Change in frequency/wavelength of wave as source moves relative to observer"
+  },
+  {
+    "task_id": "F037",
+    "prompt": "How does a touchscreen work? (capacitive)",
+    "category": "facts",
+    "difficulty": "hard",
+    "tags": [
+      "science",
+      "explanation"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Human body conducts electricity, touching screen changes capacitance at that point, detected by grid of sensors"
+  },
+  {
+    "task_id": "F038",
+    "prompt": "Explain how CRISPR gene editing works at the molecular level.",
+    "category": "facts",
+    "difficulty": "expert",
+    "tags": [
+      "advanced"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Cas9 enzyme guided by RNA to target DNA sequence, cuts both strands, cell repairs using template"
+  },
+  {
+    "task_id": "F039",
+    "prompt": "What is the difference between fusion and fission as energy sources?",
+    "category": "facts",
+    "difficulty": "expert",
+    "tags": [
+      "advanced"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Fission: splits heavy atoms. Fusion: combines light atoms. Fusion produces more energy, less waste, but harder to sustain"
+  },
+  {
+    "task_id": "F040",
+    "prompt": "How does quantum entanglement challenge classical physics?",
+    "category": "facts",
+    "difficulty": "expert",
+    "tags": [
+      "advanced"
+    ],
+    "answer_type": "text",
+    "expected_answer": "Entangled particles instantaneously affect each other regardless of distance, violating local realism"
+  },
+  {
+    "task_id": "C001",
+    "prompt": "Write a Python function called greet that takes a name and returns 'Hello, {name}!'",
+    "category": "coding",
+    "difficulty": "easy",
+    "tags": [
+      "python",
+      "syntax"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def greet(name): return f'Hello, {name}!'"
+  },
+  {
+    "task_id": "C002",
+    "prompt": "How do you print 'Hello World' in Python?",
+    "category": "coding",
+    "difficulty": "easy",
+    "tags": [
+      "python",
+      "syntax"
+    ],
+    "answer_type": "code",
+    "expected_answer": "print('Hello World')"
+  },
+  {
+    "task_id": "C003",
+    "prompt": "Write a Python expression to check if a number x is even.",
+    "category": "coding",
+    "difficulty": "easy",
+    "tags": [
+      "python",
+      "syntax"
+    ],
+    "answer_type": "code",
+    "expected_answer": "x % 2 == 0"
+  },
+  {
+    "task_id": "C004",
+    "prompt": "How do you create a list with numbers 1 to 5 in Python?",
+    "category": "coding",
+    "difficulty": "easy",
+    "tags": [
+      "python",
+      "syntax"
+    ],
+    "answer_type": "code",
+    "expected_answer": "[1, 2, 3, 4, 5]"
+  },
+  {
+    "task_id": "C005",
+    "prompt": "Write a Python function that returns the factorial of n.",
+    "category": "coding",
+    "difficulty": "medium",
+    "tags": [
+      "function"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def factorial(n): return 1 if n <= 1 else n * factorial(n-1)"
+  },
+  {
+    "task_id": "C006",
+    "prompt": "Write a function that reverses a string.",
+    "category": "coding",
+    "difficulty": "medium",
+    "tags": [
+      "function"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def reverse(s): return s[::-1]"
+  },
+  {
+    "task_id": "C007",
+    "prompt": "Write code to find the largest number in a list.",
+    "category": "coding",
+    "difficulty": "medium",
+    "tags": [
+      "function"
+    ],
+    "answer_type": "code",
+    "expected_answer": "max(lst)"
+  },
+  {
+    "task_id": "C008",
+    "prompt": "Write a function that checks if a string is a palindrome.",
+    "category": "coding",
+    "difficulty": "medium",
+    "tags": [
+      "function"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def is_palindrome(s): return s == s[::-1]"
+  },
+  {
+    "task_id": "C009",
+    "prompt": "Write a function that counts vowels in a string.",
+    "category": "coding",
+    "difficulty": "medium",
+    "tags": [
+      "function"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def count_vowels(s): return sum(1 for c in s.lower() if c in 'aeiou')"
+  },
+  {
+    "task_id": "C010",
+    "prompt": "Write a function that returns the nth Fibonacci number.",
+    "category": "coding",
+    "difficulty": "medium",
+    "tags": [
+      "function"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def fib(n): a, b = 0, 1; [a, b := b, a+b for _ in range(n)]; return a"
+  },
+  {
+    "task_id": "C011",
+    "prompt": "Write a function that removes duplicates from a list.",
+    "category": "coding",
+    "difficulty": "medium",
+    "tags": [
+      "function"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def dedup(lst): return list(dict.fromkeys(lst))"
+  },
+  {
+    "task_id": "C012",
+    "prompt": "Write a function that merges two sorted lists.",
+    "category": "coding",
+    "difficulty": "medium",
+    "tags": [
+      "function"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def merge(a, b): i=j=0; r=[]; while i<len(a) and j<len(b): r.append(a[i] if a[i]<b[j] else b[j]); exec('i+=1' if a[i]<b[j] else 'j+=1'); return r + a[i:] + b[j:]"
+  },
+  {
+    "task_id": "C013",
+    "prompt": "Write a function that converts a string to title case.",
+    "category": "coding",
+    "difficulty": "medium",
+    "tags": [
+      "function"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def title_case(s): return ' '.join(w.capitalize() for w in s.split())"
+  },
+  {
+    "task_id": "C014",
+    "prompt": "Write a Python class for a simple BankAccount with deposit and withdraw methods.",
+    "category": "coding",
+    "difficulty": "medium",
+    "tags": [
+      "function"
+    ],
+    "answer_type": "code",
+    "expected_answer": "class BankAccount: def __init__(self): self.balance=0\ndef deposit(self,a): self.balance+=a\ndef withdraw(self,a): self.balance-=a"
+  },
+  {
+    "task_id": "C015",
+    "prompt": "Write a function that finds all prime numbers up to n.",
+    "category": "coding",
+    "difficulty": "medium",
+    "tags": [
+      "function"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def sieve(n): p=[True]*(n+1); p[0]=p[1]=False; [p[i*i::i] for i in range(2,int(n**0.5)+1) if p[i]]; return [i for i in range(n+1) if p[i]]"
+  },
+  {
+    "task_id": "C016",
+    "prompt": "Write a function that counts word frequency in a string.",
+    "category": "coding",
+    "difficulty": "medium",
+    "tags": [
+      "function"
+    ],
+    "answer_type": "code",
+    "expected_answer": "from collections import Counter; def word_freq(s): return Counter(s.lower().split())"
+  },
+  {
+    "task_id": "C017",
+    "prompt": "Implement binary search in Python.",
+    "category": "coding",
+    "difficulty": "hard",
+    "tags": [
+      "algorithm"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def binary_search(arr, x): lo, hi = 0, len(arr)-1; while lo <= hi: mid = (lo+hi)//2; ..."
+  },
+  {
+    "task_id": "C018",
+    "prompt": "Write a Stack class with push, pop, and peek methods.",
+    "category": "coding",
+    "difficulty": "hard",
+    "tags": [
+      "algorithm"
+    ],
+    "answer_type": "code",
+    "expected_answer": "class Stack: def __init__(self): self.items=[]; def push(self,i): self.items.append(i); def pop(self): return self.items.pop(); def peek(self): return self.items[-1]"
+  },
+  {
+    "task_id": "C019",
+    "prompt": "Write a function that finds the longest common prefix of a list of strings.",
+    "category": "coding",
+    "difficulty": "hard",
+    "tags": [
+      "algorithm"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def lcp(strs): if not strs: return ''; for i, c in enumerate(strs[0]): if any(i>=len(s) or s[i]!=c for s in strs): return strs[0][:i]; return strs[0]"
+  },
+  {
+    "task_id": "C020",
+    "prompt": "Write a function that detects a cycle in a linked list.",
+    "category": "coding",
+    "difficulty": "hard",
+    "tags": [
+      "algorithm"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def has_cycle(head): slow=fast=head; while fast and fast.next: slow=slow.next; fast=fast.next.next; if slow==fast: return True; return False"
+  },
+  {
+    "task_id": "C021",
+    "prompt": "Write a function that serializes a binary tree to a string and deserializes it back.",
+    "category": "coding",
+    "difficulty": "hard",
+    "tags": [
+      "algorithm"
+    ],
+    "answer_type": "code",
+    "expected_answer": "class Codec: ..."
+  },
+  {
+    "task_id": "C022",
+    "prompt": "Write a function returning all permutations of a list.",
+    "category": "coding",
+    "difficulty": "hard",
+    "tags": [
+      "algorithm"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def permute(lst): if len(lst)<=1: return [lst]; res=[]; for i,e in enumerate(lst): [res.append([e]+p) for p in permute(lst[:i]+lst[i+1:])]; return res"
+  },
+  {
+    "task_id": "C023",
+    "prompt": "Write LRU cache implementation.",
+    "category": "coding",
+    "difficulty": "hard",
+    "tags": [
+      "algorithm"
+    ],
+    "answer_type": "code",
+    "expected_answer": "from collections import OrderedDict; class LRU: def __init__(self, cap): self.cache=OrderedDict(); self.cap=cap; def get(self,k): if k not in self.cache: return -1; self.cache.move_to_end(k); return self.cache[k]; def put(self,k,v): self.cache[k]=v; self.cache.move_to_end(k); if len(self.cache)>self.cap: self.cache.popitem(last=False)"
+  },
+  {
+    "task_id": "C024",
+    "prompt": "Implement a function to find the kth largest element in an array.",
+    "category": "coding",
+    "difficulty": "hard",
+    "tags": [
+      "algorithm"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def kth_largest(nums, k): return sorted(nums, reverse=True)[k-1]"
+  },
+  {
+    "task_id": "C025",
+    "prompt": "Write a function to convert Roman numerals to integers.",
+    "category": "coding",
+    "difficulty": "hard",
+    "tags": [
+      "algorithm"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def roman_to_int(s): vals={'I':1,'V':5,'X':10,'L':50,'C':100,'D':500,'M':1000}; total=0; prev=0; for c in reversed(s): curr=vals[c]; total+=curr if curr>=prev else -curr; prev=curr; return total"
+  },
+  {
+    "task_id": "C026",
+    "prompt": "Write a function that generates all valid parentheses combinations for n pairs.",
+    "category": "coding",
+    "difficulty": "hard",
+    "tags": [
+      "algorithm"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def gen_parens(n): res=[]; def bt(s,o,c): if len(s)==2*n: res.append(s); if o<n: bt(s+'(',o+1,c); if c<o: bt(s+')',o,c+1); bt('',0,0); return res"
+  },
+  {
+    "task_id": "C027",
+    "prompt": "Implement a function that solves the Two Sum problem (return indices).",
+    "category": "coding",
+    "difficulty": "hard",
+    "tags": [
+      "algorithm"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def two_sum(nums, t): m={}; for i,n in enumerate(nums): if t-n in m: return [m[t-n],i]; m[n]=i"
+  },
+  {
+    "task_id": "C028",
+    "prompt": "Write a function to find the longest substring without repeating characters.",
+    "category": "coding",
+    "difficulty": "hard",
+    "tags": [
+      "algorithm"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def longest_unique(s): used={}; start=0; max_len=0; for i,c in enumerate(s): if c in used and used[c]>=start: start=used[c]+1; used[c]=i; max_len=max(max_len,i-start+1); return max_len"
+  },
+  {
+    "task_id": "C029",
+    "prompt": "Write a function that checks if a binary tree is balanced.",
+    "category": "coding",
+    "difficulty": "hard",
+    "tags": [
+      "algorithm"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def is_balanced(root): def dfs(n): if not n: return (True,0); lb,lh=dfs(n.left); rb,rh=dfs(n.right); return (lb and rb and abs(lh-rh)<=1, max(lh,rh)+1); return dfs(root)[0]"
+  },
+  {
+    "task_id": "C030",
+    "prompt": "Implement merge sort that handles duplicate values efficiently.",
+    "category": "coding",
+    "difficulty": "expert",
+    "tags": [
+      "advanced"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def merge_sort(arr): if len(arr)<=1: return arr; mid=len(arr)//2; left=merge_sort(arr[:mid]); right=merge_sort(arr[mid:]); ... (standard merge)"
+  },
+  {
+    "task_id": "C031",
+    "prompt": "Write a function to find the longest palindromic substring.",
+    "category": "coding",
+    "difficulty": "expert",
+    "tags": [
+      "advanced"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def longest_pal(s): n=len(s); def expand(l,r): while l>=0 and r<n and s[l]==s[r]: l-=1; r+=1; return s[l+1:r]; return max((expand(i,i) for i in range(n)), key=len, default='')"
+  },
+  {
+    "task_id": "C032",
+    "prompt": "Implement Dijkstra's shortest path algorithm.",
+    "category": "coding",
+    "difficulty": "expert",
+    "tags": [
+      "advanced"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def dijkstra(graph, start): import heapq; dist={node:float('inf') for node in graph}; dist[start]=0; pq=[(0,start)]; while pq: d,u=heapq.heappop(pq); if d>dist[u]: continue; for v,w in graph[u].items(): if dist[u]+w<dist[v]: dist[v]=dist[u]+w; heapq.heappush(pq,(dist[v],v)); return dist"
+  },
+  {
+    "task_id": "C033",
+    "prompt": "Write a regex matcher supporting '.' and '*' wildcards.",
+    "category": "coding",
+    "difficulty": "expert",
+    "tags": [
+      "advanced"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def is_match(s, p): import re; return bool(re.fullmatch(p, s))"
+  },
+  {
+    "task_id": "C034",
+    "prompt": "Design a rate limiter that allows N requests per second.",
+    "category": "coding",
+    "difficulty": "expert",
+    "tags": [
+      "advanced"
+    ],
+    "answer_type": "code",
+    "expected_answer": "from collections import deque; class RateLimiter: def __init__(self, n): self.n=n; self.times=deque(); def allow(self): now=time.time(); while self.times and self.times[0]<now-1: self.times.popleft(); if len(self.times)>=self.n: return False; self.times.append(now); return True"
+  },
+  {
+    "task_id": "C035",
+    "prompt": "Implement topological sort for a directed acyclic graph.",
+    "category": "coding",
+    "difficulty": "expert",
+    "tags": [
+      "advanced"
+    ],
+    "answer_type": "code",
+    "expected_answer": "def topo_sort(graph): visited=set(); order=[]; def dfs(u): visited.add(u); for v in graph[u]: if v not in visited: dfs(v); order.append(u); [dfs(n) for n in graph if n not in visited]; return order[::-1]"
+  }
+]
