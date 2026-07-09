@@ -44,8 +44,10 @@ from my_routing_agent.utils.math_eval import (
     try_prime_check,
 )
 from my_routing_agent.config import (
+    RemoteModelTier,
     batch_timeout_seconds,
     parse_allowed_models,
+    remote_model_tiers,
     request_timeout_seconds,
     skip_local_inference,
 )
@@ -180,11 +182,12 @@ REMOTE_VISION_MODEL = "accounts/fireworks/models/qwen3p7-plus"
 
 FIREWORKS_MODEL_PREFIX = "accounts/fireworks/models/"
 
-# Priority-ordered remote text models. The first entry is the default; on
-# NOT_FOUND / inaccessible / not-deployed the executor tries the next in order.
+# Priority-ordered remote text models used for legacy fallback when no tier score
+# is supplied. Tier selection (see REMOTE_MODEL_TIERS) is the primary path.
 REMOTE_MODEL_CANDIDATES = [
-    "accounts/fireworks/models/minimax-m3",
     "accounts/fireworks/models/qwen3p7-plus",
+    "accounts/fireworks/models/minimax-m3",
+    "accounts/fireworks/models/qwen3p7-max",
 ]
 
 # Provider/model registry: models known to be deployed and accessible on
@@ -194,11 +197,31 @@ KNOWN_DEPLOYED_REMOTE_MODELS = frozenset(
     {
         "accounts/fireworks/models/minimax-m3",
         "accounts/fireworks/models/qwen3p7-plus",
+        "accounts/fireworks/models/qwen3p7-max",
         "accounts/fireworks/models/llama-v3p2-11b-vision-instruct",
     }
 )
 
+REMOTE_MODEL_TIERS: list[RemoteModelTier] = list(remote_model_tiers())
+
 _ALLOWED_MODELS_FILTER: frozenset[str] | None = None
+
+
+def _select_remote_tier(score: int, default: str) -> str:
+    """Pick a remote model id from complexity score tiers."""
+    default_norm = normalize_model_id(default) or DEFAULT_REMOTE_MODEL
+    for tier in REMOTE_MODEL_TIERS:
+        if tier.min_score <= score <= tier.max_score:
+            tier_model = normalize_model_id(tier.model_id)
+            if not tier_model:
+                continue
+            if _ALLOWED_MODELS_FILTER is None or tier_model in _ALLOWED_MODELS_FILTER:
+                return tier_model
+    if _ALLOWED_MODELS_FILTER is None or default_norm in _ALLOWED_MODELS_FILTER:
+        return default_norm
+    if _ALLOWED_MODELS_FILTER:
+        return sorted(_ALLOWED_MODELS_FILTER)[0]
+    return default_norm
 
 
 def configure_allowed_models(*, strict: bool = False) -> str:
@@ -207,7 +230,7 @@ def configure_allowed_models(*, strict: bool = False) -> str:
     Returns the primary remote model id to use for batch processing.
   """
     global REMOTE_MODEL_CANDIDATES, KNOWN_DEPLOYED_REMOTE_MODELS, REMOTE_MODEL_OPTIONS
-    global DEFAULT_REMOTE_MODEL, REMOTE_VISION_MODEL, _ALLOWED_MODELS_FILTER
+    global DEFAULT_REMOTE_MODEL, REMOTE_VISION_MODEL, _ALLOWED_MODELS_FILTER, REMOTE_MODEL_TIERS
 
     allowed_raw = parse_allowed_models()
     if not allowed_raw:
@@ -219,11 +242,13 @@ def configure_allowed_models(*, strict: bool = False) -> str:
     if not allowed:
         raise RuntimeError("ALLOWED_MODELS did not contain any valid model ids")
 
+    REMOTE_MODEL_TIERS = list(remote_model_tiers())
     catalog = {
         normalize_model_id(m)
         for m in (
             *REMOTE_MODEL_CANDIDATES,
             *KNOWN_DEPLOYED_REMOTE_MODELS,
+            *(tier.model_id for tier in REMOTE_MODEL_TIERS),
             *REMOTE_MODEL_OPTIONS,
             REMOTE_VISION_MODEL,
             DEFAULT_REMOTE_MODEL,
@@ -302,16 +327,37 @@ def is_known_deployed_model(model_id: str) -> bool:
     return normalize_model_id(model_id) in KNOWN_DEPLOYED_REMOTE_MODELS
 
 
-def build_remote_candidates(selected_model: str) -> list[str]:
+def build_remote_candidates(selected_model: str, score: int | None = None) -> list[str]:
     """
     Ordered, de-duplicated remote attempt list.
 
-    - The user-selected model is tried FIRST only when it is known-deployed.
-    - Otherwise the validated candidates lead, and the unknown selection is kept
-      as a last-resort attempt (so we still try it, but never first).
+    When ``score`` is provided, the tier-selected model is tried first, then
+    higher-capability tiers as fallbacks. Without ``score``, legacy ordering
+    applies (user selection + REMOTE_MODEL_CANDIDATES).
     """
     selected = normalize_model_id(selected_model)
-    ordered: list[str] = []
+
+    if score is not None:
+        tier_model = normalize_model_id(
+            _select_remote_tier(score, selected or DEFAULT_REMOTE_MODEL)
+        )
+        ordered: list[str] = []
+        if tier_model:
+            ordered.append(tier_model)
+        for tier in reversed(REMOTE_MODEL_TIERS):
+            mid = normalize_model_id(tier.model_id)
+            if mid and mid not in ordered:
+                ordered.append(mid)
+        if _ALLOWED_MODELS_FILTER is not None:
+            ordered = [m for m in ordered if m in _ALLOWED_MODELS_FILTER]
+        if not ordered and _ALLOWED_MODELS_FILTER:
+            ordered = sorted(_ALLOWED_MODELS_FILTER)
+        if selected and selected not in ordered:
+            if _ALLOWED_MODELS_FILTER is None or selected in _ALLOWED_MODELS_FILTER:
+                ordered.append(selected)
+        return ordered
+
+    ordered = []
 
     if selected and is_known_deployed_model(selected):
         ordered.append(selected)
@@ -1119,7 +1165,8 @@ def route_decision(
     Greetings without complex attachments fail closed to LOCAL/canned — never REMOTE.
     """
     score = min(100, calculate_complexity(prompt))
-    remote_model = normalize_model_id(active_remote_model) or DEFAULT_REMOTE_MODEL
+    base_remote = normalize_model_id(active_remote_model) or DEFAULT_REMOTE_MODEL
+    remote_model = _select_remote_tier(score, base_remote)
 
     if has_image:
         return RouterDecision("REMOTE", score, "vision:remote", remote_model, 0.95)
@@ -2532,10 +2579,11 @@ def route_and_execute(
             prompt,
             api_key,
             active_local_model,
-            active_remote_model,
+            decision.model_id,
             started,
             skip_distillation=preserve_text,
             max_tokens=token_budget,
+            complexity_score=decision.complexity_score,
         )
         if timing and result.answer:
             timing.mark("first_token")
@@ -2723,7 +2771,10 @@ def _angkor_phantom_execute(
         confidence = 1.0 - abs(angkor_result.complexity_score - router.theta) / 0.5
 
         # Use validated remote models for fallback chain
-        remote_candidates = build_remote_candidates(active_remote_model)
+        remote_candidates = build_remote_candidates(
+            active_remote_model,
+            score=int(angkor_result.complexity_score * 100),
+        )
 
         def _remote_call(
             text: str,
@@ -2738,6 +2789,7 @@ def _angkor_phantom_execute(
                     text, api_key, active_local_model, model_id,
                     started, fallback=False, skip_distillation=False,
                     max_tokens=max_tokens,
+                    complexity_score=int(angkor_result.complexity_score * 100),
                 )
                 tokens = result.tokens if result else 0
                 return result.answer if result and result.answer else None, "ok", tokens
@@ -2923,7 +2975,7 @@ def process_user_request(
                 tokens=0,
                 latency_ms=(time.perf_counter() - started) * 1000.0,
                 original_prompt=prompt,
-                model_used=active_remote_model,
+                model_used=preview_decision.model_id,
                 routing_reason=preview_decision.reason,
                 complexity_score=preview_decision.complexity_score,
                 diagnostics={"fail_fast": True, "skipped_phantom": True, "skipped_cache": True},
@@ -3080,6 +3132,7 @@ def _route_text_local(
             active_local_model,
             active_remote_model,
             started,
+            complexity_score=min(100, calculate_complexity(prompt)),
         )
     timeout_s = _local_inference_timeout(active_local_model)
     timeout_ms = timeout_s * 1000
@@ -3191,6 +3244,7 @@ def _route_text_local(
         started,
         fallback=True,
         skip_distillation=True,
+        complexity_score=min(100, calculate_complexity(prompt)),
     )
     fallback_result.fallback_used = True
     fallback_result.fallback_reason = fallback_reason
@@ -3215,6 +3269,7 @@ def _route_text_remote(
     fallback: bool = False,
     skip_distillation: bool = False,
     max_tokens: int = REMOTE_MAX_TOKENS_DEFAULT,
+    complexity_score: int | None = None,
 ) -> RouteResult:
     route_name: RouteName = "FALLBACK_REMOTE" if fallback else "TEXT_REMOTE"
 
@@ -3258,7 +3313,11 @@ def _route_text_remote(
     }
     # Priority-ordered remote models. The selected model is validated against the
     # registry first; an unknown/undeployed selection is never tried first.
-    candidates = build_remote_candidates(active_remote_model)
+    candidates = (
+        build_remote_candidates(active_remote_model, complexity_score)
+        if complexity_score is not None
+        else build_remote_candidates(active_remote_model)
+    )
     if not candidates:
         candidates = [normalize_model_id(active_remote_model) or active_remote_model]
 

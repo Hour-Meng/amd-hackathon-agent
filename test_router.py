@@ -53,7 +53,8 @@ from app import (
 
 LOCAL_MODEL = DEFAULT_LOCAL_MODEL
 REMOTE_MODEL = DEFAULT_REMOTE_MODEL
-REMOTE_FALLBACK = REMOTE_MODEL_CANDIDATES[1]
+REMOTE_FALLBACK = REMOTE_MODEL_CANDIDATES[0]
+BALANCED_COMPLEXITY_SCORE = 30
 THRESHOLD = 30
 COMPOSITE_PROMPT = (
     "spell apple backward, write the answer of 9+10 backward. "
@@ -206,15 +207,46 @@ def test_default_local_is_lightweight_utility():
     assert DEFAULT_REMOTE_MODEL == "accounts/fireworks/models/minimax-m3"
 
 
-def test_default_remote_list_contains_minimax_and_qwen3p7():
-    assert REMOTE_MODEL_CANDIDATES[0].endswith("minimax-m3")
-    assert REMOTE_MODEL_CANDIDATES[1].endswith("qwen3p7-plus")
+def test_default_remote_list_contains_tier_models():
+    ids = {c.split("/")[-1] for c in REMOTE_MODEL_CANDIDATES}
+    assert "qwen3p7-plus" in ids
+    assert "minimax-m3" in ids
+    assert "qwen3p7-max" in ids
+
+
+def test_select_remote_tier_by_complexity():
+    assert app._select_remote_tier(10, REMOTE_MODEL).endswith("qwen3p7-plus")
+    assert app._select_remote_tier(40, REMOTE_MODEL).endswith("minimax-m3")
+    assert app._select_remote_tier(70, REMOTE_MODEL).endswith("qwen3p7-max")
+
+
+def test_build_remote_candidates_uses_tier_first():
+    candidates = build_remote_candidates(REMOTE_MODEL, score=10)
+    assert candidates[0].endswith("qwen3p7-plus")
+    assert any(m.endswith("qwen3p7-max") for m in candidates[1:])
+    assert any(m.endswith("minimax-m3") for m in candidates[1:])
+
+
+def test_complex_remote_decision_uses_full_tier():
+    prompt = (
+        "Explain quantum field theory and derive the path integral formulation "
+        "with mathematical rigor and worked examples across multiple chapters."
+    )
+    decision = route_decision(
+        prompt,
+        THRESHOLD,
+        has_image=False,
+        active_local_model=LOCAL_MODEL,
+        active_remote_model=REMOTE_MODEL,
+    )
+    assert decision.route == "REMOTE"
+    assert decision.model_id.endswith("qwen3p7-max")
 
 
 def test_general_prompt_defaults_to_remote():
     decision = _decide("What is the weather like today in Paris?")
     assert decision.route == "REMOTE", decision
-    assert decision.model_id == REMOTE_MODEL
+    assert decision.model_id.endswith("qwen3p7-plus")
 
 
 # --- Local capability ceiling -------------------------------------------------------
@@ -341,7 +373,7 @@ def test_local_timeout_falls_back_to_remote():
 
     assert result.route == "FALLBACK_REMOTE"
     assert result.fallback_used is True
-    assert result.model_used == REMOTE_MODEL
+    assert result.model_used.endswith("qwen3p7-plus")
     assert result.answer == "remote answer"
     assert post_calls["local"] == 1
     assert had_prior_local_failure("hello")
@@ -375,7 +407,7 @@ def test_unhealthy_local_skips_inference_call():
 
     assert post_calls["local"] == 0
     assert result.route == "FALLBACK_REMOTE"
-    assert result.model_used == REMOTE_MODEL
+    assert result.model_used.endswith("qwen3p7-plus")
 
 
 def test_prior_local_failure_forces_remote():
@@ -407,7 +439,7 @@ def _reset_remote_validation_state() -> None:
 
 def test_remote_fallback_on_not_found_uses_next_candidate():
     _reset_remote_validation_state()
-    preferred, second = REMOTE_MODEL, REMOTE_FALLBACK
+    preferred, second = build_remote_candidates(REMOTE_MODEL, score=BALANCED_COMPLEXITY_SCORE)[:2]
 
     def handler(url, body):
         if body.get("model") == preferred:
@@ -428,6 +460,7 @@ def test_remote_fallback_on_not_found_uses_next_candidate():
             REMOTE_MODEL,
             time.perf_counter(),
             skip_distillation=True,
+            complexity_score=BALANCED_COMPLEXITY_SCORE,
         )
 
     assert result.model_used == second
@@ -528,7 +561,7 @@ def test_ui_route_label_matches_fallback_backend():
         )
 
     assert result.route == "FALLBACK_REMOTE"
-    assert result.model_used == REMOTE_MODEL
+    assert result.model_used.endswith("qwen3p7-plus")
     assert "TEXT_REMOTE" in "☁️ TEXT_REMOTE (fallback)"
 
 
@@ -870,29 +903,32 @@ def test_dispatcher_matches_router_for_greeting():
     assert result.model_used != REMOTE_MODEL
 
 
-def test_greeting_routes_remote_when_skip_local(monkeypatch):
-    monkeypatch.setattr(app, "SKIP_LOCAL", True)
+def test_greeting_routes_remote_when_skip_local():
+    original = app.SKIP_LOCAL
+    app.SKIP_LOCAL = True
+    try:
+        def handler(url, body):
+            return _FakeResponse(
+                200,
+                payload={
+                    "choices": [{"message": {"content": "Hello from Fireworks!"}}],
+                    "usage": {"total_tokens": 5},
+                },
+            )
 
-    def handler(url, body):
-        return _FakeResponse(
-            200,
-            payload={
-                "choices": [{"message": {"content": "Hello from Fireworks!"}}],
-                "usage": {"total_tokens": 5},
-            },
-        )
-
-    with _patch_post(handler):
-        result = app.route_and_execute(
-            "Hello, how are you?",
-            THRESHOLD,
-            "fw_test",
-            LOCAL_MODEL,
-            REMOTE_MODEL,
-        )
-    assert result.route == "TEXT_REMOTE"
-    assert result.model_used != "canned-reply"
-    assert "Hello from Fireworks!" in result.answer
+        with _patch_post(handler):
+            result = app.route_and_execute(
+                "Hello, how are you?",
+                THRESHOLD,
+                "fw_test",
+                LOCAL_MODEL,
+                REMOTE_MODEL,
+            )
+        assert result.route == "TEXT_REMOTE"
+        assert result.model_used != "canned-reply"
+        assert "Hello from Fireworks!" in result.answer
+    finally:
+        app.SKIP_LOCAL = original
 
 
 def test_slow_remote_ui_timeout_stays_responsive():

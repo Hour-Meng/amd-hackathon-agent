@@ -44,6 +44,54 @@ class RemoteConfig:
 
 
 @dataclass(frozen=True)
+class RemoteModelTier:
+    """Maps a complexity score band to a Fireworks remote model."""
+
+    min_score: int
+    max_score: int
+    model_id: str
+    label: str
+
+
+def _tier_model_env(env_key: str, default: str) -> str:
+    value = os.getenv(env_key, default).strip()
+    return value or default
+
+
+def remote_model_tiers() -> tuple[RemoteModelTier, ...]:
+    """Tiered remote models by task complexity (overridable via env)."""
+    return (
+        RemoteModelTier(
+            0,
+            25,
+            _tier_model_env(
+                "REMOTE_TIER_FAST_MODEL",
+                "accounts/fireworks/models/qwen3p7-plus",
+            ),
+            "fast",
+        ),
+        RemoteModelTier(
+            26,
+            55,
+            _tier_model_env(
+                "REMOTE_TIER_BALANCED_MODEL",
+                "accounts/fireworks/models/minimax-m3",
+            ),
+            "balanced",
+        ),
+        RemoteModelTier(
+            56,
+            100,
+            _tier_model_env(
+                "REMOTE_TIER_FULL_MODEL",
+                "accounts/fireworks/models/qwen3p7-max",
+            ),
+            "full",
+        ),
+    )
+
+
+@dataclass(frozen=True)
 class RoutingThresholds:
     """Strict routing thresholds for Tier-1 heuristics and Tier-2 classification."""
 
