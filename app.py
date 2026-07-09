@@ -35,6 +35,7 @@ from my_routing_agent.routers.engine import (
 from my_routing_agent.routers.features import FeatureExtractor
 from my_routing_agent.phantom.budget import BudgetEnforcer
 from my_routing_agent.phantom.deadzone_runner import DeadZoneRunner
+from my_routing_agent.verifier.cascade import CascadeVerifier
 from my_routing_agent.utils.math_eval import (
     extract_arithmetic_expression,
     is_local_arithmetic,
@@ -2443,7 +2444,7 @@ def route_and_execute(
             timing.attach(result)
         return result
 
-    if decision.reason == CANNED_REPLY_REASON:
+    if decision.reason == CANNED_REPLY_REASON and decision.route != "REMOTE":
         result = RouteResult(
             answer=get_canned_greeting_reply(prompt),
             route="TEXT_LOCAL",
@@ -2465,7 +2466,11 @@ def route_and_execute(
             timing.attach(result)
         return result
 
-    if decision.reason == LOCAL_GREETING_REASON and pure_greeting:
+    if (
+        decision.reason == LOCAL_GREETING_REASON
+        and pure_greeting
+        and decision.route != "REMOTE"
+    ):
         if timing:
             timing.mark("model_call_start")
         answer = get_canned_greeting_reply(prompt)

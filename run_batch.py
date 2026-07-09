@@ -65,6 +65,7 @@ def _process_task(
     *,
     api_key: str,
     remote_model: str,
+    executor: ThreadPoolExecutor,
 ) -> dict[str, object]:
     started_msg = f"task_id={task_id!r} chars={len(prompt)}"
     logger.info("Processing %s", started_msg)
@@ -78,18 +79,17 @@ def _process_task(
             remote_model,
         )
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_run)
-        try:
-            result = future.result(timeout=REQUEST_TIMEOUT_SECONDS)
-        except FuturesTimeoutError:
-            logger.warning("Task timed out after %ss: %s", REQUEST_TIMEOUT_SECONDS, started_msg)
-            return {
-                "task_id": task_id,
-                "answer": (
-                    f"Error: request timed out after {REQUEST_TIMEOUT_SECONDS:.0f} seconds"
-                ),
-            }
+    future = executor.submit(_run)
+    try:
+        result = future.result(timeout=REQUEST_TIMEOUT_SECONDS)
+    except FuturesTimeoutError:
+        logger.warning("Task timed out after %ss: %s", REQUEST_TIMEOUT_SECONDS, started_msg)
+        return {
+            "task_id": task_id,
+            "answer": (
+                f"Error: request timed out after {REQUEST_TIMEOUT_SECONDS:.0f} seconds"
+            ),
+        }
 
     answer = result.answer.strip() if result.answer else ""
     if not result.success and answer.startswith("❌"):
@@ -105,6 +105,27 @@ def _process_task(
         result.latency_ms,
     )
     return {"task_id": task_id, "answer": answer}
+
+
+def _run_batch_loop(
+    tasks: list[dict[str, Any]],
+    *,
+    api_key: str,
+    remote_model: str,
+) -> list[dict[str, object]]:
+    results: list[dict[str, object]] = []
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        for task in tasks:
+            results.append(
+                _process_task(
+                    task["task_id"],
+                    task["prompt"],
+                    api_key=api_key,
+                    remote_model=remote_model,
+                    executor=executor,
+                )
+            )
+    return results
 
 
 def main() -> int:
@@ -142,25 +163,35 @@ def main() -> int:
         BATCH_TIMEOUT_SECONDS,
     )
 
-    signal.signal(signal.SIGALRM, _batch_timeout_handler)
-    signal.alarm(int(BATCH_TIMEOUT_SECONDS))
-
-    results: list[dict[str, object]] = []
     try:
-        for task in tasks:
-            results.append(
-                _process_task(
-                    task["task_id"],
-                    task["prompt"],
+        if hasattr(signal, "SIGALRM"):
+            signal.signal(signal.SIGALRM, _batch_timeout_handler)
+            signal.alarm(int(BATCH_TIMEOUT_SECONDS))
+            try:
+                results = _run_batch_loop(
+                    tasks,
                     api_key=api_key,
                     remote_model=remote_model,
                 )
-            )
+            finally:
+                signal.alarm(0)
+        else:
+            with ThreadPoolExecutor(max_workers=1) as batch_executor:
+                future = batch_executor.submit(
+                    _run_batch_loop,
+                    tasks,
+                    api_key=api_key,
+                    remote_model=remote_model,
+                )
+                try:
+                    results = future.result(timeout=BATCH_TIMEOUT_SECONDS)
+                except FuturesTimeoutError as exc:
+                    raise BatchTimeoutError(
+                        f"Batch exceeded {BATCH_TIMEOUT_SECONDS:.0f}s limit"
+                    ) from exc
     except BatchTimeoutError as exc:
         logger.error("%s", exc)
         return 1
-    finally:
-        signal.alarm(0)
 
     try:
         OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)

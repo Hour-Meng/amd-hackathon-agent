@@ -870,6 +870,31 @@ def test_dispatcher_matches_router_for_greeting():
     assert result.model_used != REMOTE_MODEL
 
 
+def test_greeting_routes_remote_when_skip_local(monkeypatch):
+    monkeypatch.setattr(app, "SKIP_LOCAL", True)
+
+    def handler(url, body):
+        return _FakeResponse(
+            200,
+            payload={
+                "choices": [{"message": {"content": "Hello from Fireworks!"}}],
+                "usage": {"total_tokens": 5},
+            },
+        )
+
+    with _patch_post(handler):
+        result = app.route_and_execute(
+            "Hello, how are you?",
+            THRESHOLD,
+            "fw_test",
+            LOCAL_MODEL,
+            REMOTE_MODEL,
+        )
+    assert result.route == "TEXT_REMOTE"
+    assert result.model_used != "canned-reply"
+    assert "Hello from Fireworks!" in result.answer
+
+
 def test_slow_remote_ui_timeout_stays_responsive():
     import time as _time
 

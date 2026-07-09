@@ -2,7 +2,7 @@
 
 AMD Hackathon project: a **middleware-first hybrid inference router** that minimizes remote API token spend by sending work to the cheapest capable backend—Python `eval`, local Ollama, or Fireworks AI—based on prompt shape, length, and modality.
 
-The primary demo is a **Streamlit chatbot** in [`app.py`](app.py). A separate, library-style orchestrator lives in [`my_routing_agent/`](my_routing_agent/) for CLI use and deeper experimentation.
+The primary demo is a **Streamlit chatbot** in [`app.py`](app.py). A separate **batch entrypoint** ([`run_batch.py`](run_batch.py)) supports AMD Hackathon Track 1 evaluation via Docker. A library-style orchestrator lives in [`my_routing_agent/`](my_routing_agent/) for CLI use and deeper experimentation.
 
 ---
 
@@ -14,6 +14,7 @@ The primary demo is a **Streamlit chatbot** in [`app.py`](app.py). A separate, l
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Running the App](#running-the-app)
+- [Batch / Docker (Hackathon Track 1)](#batch--docker-hackathon-track-1)
 - [CLI Orchestrator (Optional)](#cli-orchestrator-optional)
 - [Routing & Middleware](#routing--middleware)
 - [Demo Prompts](#demo-prompts)
@@ -181,6 +182,94 @@ Expected: agent swarm with context-preserving sub-tasks, math handled locally, c
 
 ---
 
+## Batch / Docker (Hackathon Track 1)
+
+**You do not need Docker for normal development.** Use [Running the App](#running-the-app) for the Streamlit chat UI, or the [CLI orchestrator](#cli-orchestrator-optional) for ad-hoc prompts.
+
+Docker is only required for **AMD Hackathon Track 1 batch evaluation**: a container that reads `/input/tasks.json`, routes prompts through Fireworks AI, and writes `/output/results.json`.
+
+### Who needs this?
+
+| Role | What to run |
+|------|-------------|
+| Local dev / demo | `streamlit run app.py` (no Docker) |
+| CLI experiments | `python -m my_routing_agent.main "..."` (no Docker) |
+| Hackathon eval / submission | Docker build + run (below) |
+
+### Input / output format
+
+**`/input/tasks.json`** — JSON array:
+
+```json
+[
+  {"task_id": "1", "prompt": "What is the capital of France?"},
+  {"task_id": "2", "prompt": "What is 12 * 8?"}
+]
+```
+
+**`/output/results.json`** — JSON array written on success:
+
+```json
+[
+  {"task_id": "1", "answer": "Paris"},
+  {"task_id": "2", "answer": "96"}
+]
+```
+
+### Build the image
+
+From the repository root:
+
+```bash
+docker buildx build --platform linux/amd64 -t amd-hackathon-agent .
+```
+
+### Run the batch processor
+
+Mount an input directory (with `tasks.json`) and an output directory. Set your Fireworks credentials and the model IDs allowed by the harness:
+
+```bash
+docker run --rm \
+  -e FIREWORKS_API_KEY=fw_... \
+  -e ALLOWED_MODELS=accounts/fireworks/models/minimax-m3 \
+  -v /path/to/input:/input \
+  -v /path/to/output:/output \
+  amd-hackathon-agent
+```
+
+The container exits with code **0** on success, **1** on failure. Limits: **10 minutes** total batch time, **30 seconds** per request (configurable via env).
+
+### Batch environment variables
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `FIREWORKS_API_KEY` | Yes | — | Fireworks API key from the harness |
+| `ALLOWED_MODELS` | Yes | — | Comma-separated model IDs (e.g. `accounts/fireworks/models/minimax-m3`) |
+| `FIREWORKS_BASE_URL` | No | `https://api.fireworks.ai/inference/v1` | Fireworks API base URL |
+| `SKIP_LOCAL` | No | `true` (in Docker) | Bypass Ollama; all inference via Fireworks |
+| `REQUEST_TIMEOUT_SECONDS` | No | `30` | Per-task timeout |
+| `BATCH_TIMEOUT_SECONDS` | No | `600` | Total batch timeout |
+| `INPUT_PATH` | No | `/input/tasks.json` | Override input file path |
+| `OUTPUT_PATH` | No | `/output/results.json` | Override output file path |
+
+### Run batch locally (without Docker)
+
+Useful for debugging before building the image:
+
+```bash
+export SKIP_LOCAL=true
+export FIREWORKS_API_KEY=fw_...
+export ALLOWED_MODELS=accounts/fireworks/models/minimax-m3
+export INPUT_PATH=./input/tasks.json
+export OUTPUT_PATH=./output/results.json
+
+python run_batch.py
+```
+
+Requires the project venv and `pip install -r requirements-batch.txt` (or full `my_routing_agent/requirements.txt`).
+
+---
+
 ## CLI Orchestrator (Optional)
 
 The `my_routing_agent` package is a separate, config-driven pipeline (compressor → router → local/remote clients) with printed telemetry.
@@ -265,12 +354,15 @@ All local and remote text/vision LLM calls receive a combined guardrail prompt:
 
 ```text
 amd-hackathon-agent/
-├── app.py                          # Streamlit demo (primary entry point)
+├── app.py                          # Streamlit demo + shared routing engine
+├── run_batch.py                    # Hackathon Track 1 batch entrypoint
+├── Dockerfile                      # linux/amd64 batch container
+├── requirements-batch.txt          # Lean deps for Docker image
 ├── README.md
 ├── my_routing_agent/
 │   ├── main.py                     # CLI orchestrator
 │   ├── config.py                   # Env-based configuration
-│   ├── requirements.txt            # Python dependencies
+│   ├── requirements.txt            # Python dependencies (Streamlit / full dev)
 │   ├── clients/
 │   │   ├── local_client.py         # Ollama / OpenAI-compatible client
 │   │   └── remote_client.py        # Fireworks client
@@ -283,7 +375,7 @@ amd-hackathon-agent/
 └── venv/                           # Local virtualenv (gitignored)
 ```
 
-There is **no** root `requirements.txt`, `src/`, `tests/`, or `.env.example`—use `my_routing_agent/requirements.txt` and the sidebar / env vars above.
+Use `my_routing_agent/requirements.txt` for Streamlit/local dev, or `requirements-batch.txt` for the Docker batch image.
 
 ---
 
