@@ -532,29 +532,42 @@ def _configure_parallel_remote_limit(max_workers: int) -> None:
 
 def _ensure_multi_model_allowlist(remote_model: str | None = None) -> None:
     """
-    Ensure ALLOWED_MODELS includes all tier failovers.
+    Build ALLOWED_MODELS from the caller request, existing env, and validated models.
 
-    A single-model allow-list collapses the remote fallback chain into identical
-    retries (the V2 report failure mode). Prefer the full tier set; if the user
-    passes --model, keep it first but still append the other tiers.
+    Prefer models confirmed accessible via validated_model_list.json when present.
+    Do not inject undeployed tier failovers (e.g. qwen3p7-max) that only burn 404s.
     """
     from app import REMOTE_FAILOVER_MODELS, default_allowed_models_csv, normalize_model_id
+    from my_routing_agent.remote.validate_models import load_validated_models
+
+    preferred: list[str] = []
+    for part in (remote_model or "").split(","):
+        mid = normalize_model_id(part.strip()) if part.strip() else ""
+        if mid and mid not in preferred:
+            preferred.append(mid)
 
     existing = [
         normalize_model_id(part)
         for part in os.environ.get("ALLOWED_MODELS", "").split(",")
         if part.strip()
     ]
-    preferred: list[str] = []
-    # Accept a single id or a comma-separated list from Streamlit / CLI.
-    for part in (remote_model or "").split(","):
-        mid = normalize_model_id(part.strip()) if part.strip() else ""
+    for mid in existing:
         if mid and mid not in preferred:
             preferred.append(mid)
-    for mid in existing + list(REMOTE_FAILOVER_MODELS):
-        if mid and mid not in preferred:
-            preferred.append(mid)
-    preferred = list(dict.fromkeys(preferred))
+
+    validated = [normalize_model_id(m) for m in load_validated_models() if normalize_model_id(m)]
+    if validated:
+        validated_set = set(validated)
+        preferred = [m for m in preferred if m in validated_set]
+        for mid in validated:
+            if mid not in preferred:
+                preferred.append(mid)
+    else:
+        for mid in REMOTE_FAILOVER_MODELS:
+            if mid and mid not in preferred:
+                preferred.append(mid)
+
+    preferred = list(dict.fromkeys(m for m in preferred if m))
     os.environ["ALLOWED_MODELS"] = ",".join(preferred) if preferred else default_allowed_models_csv()
     # #region agent log
     _agent_dbg(
@@ -565,6 +578,7 @@ def _ensure_multi_model_allowlist(remote_model: str | None = None) -> None:
             "remote_model_arg": remote_model,
             "allowed_models": os.environ.get("ALLOWED_MODELS", ""),
             "includes_qwen_max": "qwen3p7-max" in os.environ.get("ALLOWED_MODELS", ""),
+            "validated": validated,
             "failover_models": list(REMOTE_FAILOVER_MODELS),
         },
     )
@@ -598,6 +612,34 @@ def run_suite(
         logger.error("No Fireworks API key found. Set FIREWORKS_API_KEY env var or pass --api-key")
         return []
 
+    # Refresh validation against Fireworks metadata when possible, then re-apply allowlist.
+    try:
+        from my_routing_agent.remote.validate_models import (
+            load_validated_models,
+            validate_remote_models,
+        )
+        from app import REMOTE_FAILOVER_MODELS, normalize_model_id
+
+        current_allowed = [
+            normalize_model_id(part)
+            for part in os.environ.get("ALLOWED_MODELS", "").split(",")
+            if part.strip()
+        ]
+        candidates = list(dict.fromkeys(current_allowed + list(REMOTE_FAILOVER_MODELS)))
+        validate_remote_models(
+            candidates,
+            resolved_api_key,
+            output_path=Path(__file__).resolve().parent / "validated_model_list.json",
+        )
+        validated = [normalize_model_id(m) for m in load_validated_models() if normalize_model_id(m)]
+        if validated:
+            # Keep requested order but drop inaccessible models.
+            filtered = [m for m in current_allowed if m in set(validated)] or validated
+            os.environ["ALLOWED_MODELS"] = ",".join(filtered)
+            _ensure_multi_model_allowlist(remote_model or ",".join(filtered))
+    except Exception as exc:
+        logger.warning("Remote model validation skipped: %s", exc)
+
     # #region agent log
     validated_path = Path(__file__).resolve().parent / "validated_model_list.json"
     validated_payload: dict[str, Any] = {}
@@ -615,7 +657,14 @@ def run_suite(
             "validated": validated_payload.get("validated"),
             "removed": validated_payload.get("removed"),
             "allowed_models_env": os.environ.get("ALLOWED_MODELS", ""),
-            "validated_applied_to_env": False,
+            "validated_applied_to_env": bool(
+                validated_payload.get("validated")
+                and all(
+                    m.strip() in set(validated_payload.get("validated") or [])
+                    for m in os.environ.get("ALLOWED_MODELS", "").split(",")
+                    if m.strip()
+                )
+            ),
         },
     )
     # #endregion

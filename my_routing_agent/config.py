@@ -84,7 +84,7 @@ def remote_model_tiers() -> tuple[RemoteModelTier, ...]:
             100,
             _tier_model_env(
                 "REMOTE_TIER_FULL_MODEL",
-                "accounts/fireworks/models/qwen3p7-max",
+                "accounts/fireworks/models/qwen3p7-plus",
             ),
             "full",
         ),

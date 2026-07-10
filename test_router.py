@@ -1531,6 +1531,40 @@ def test_truncation_triggers_retry():
     assert result.diagnostics.get("truncated") is True
 
 
+def test_truncation_accepts_answer_on_final_attempt():
+    """When every attempt is truncated, keep the last usable answer."""
+    from unittest.mock import patch
+
+    def fake_post(*_args, **_kwargs):
+        return _FakeResponse(
+            200,
+            payload={
+                "choices": [
+                    {
+                        "message": {"content": "partial but useful"},
+                        "finish_reason": "length",
+                    }
+                ],
+                "usage": {"total_tokens": 10},
+            },
+        )
+
+    with patch("app.requests.post", side_effect=fake_post):
+        result = app._route_text_remote(
+            "Explain the French Revolution in detail",
+            "fw_test",
+            LOCAL_MODEL,
+            REMOTE_MODEL,
+            time.perf_counter(),
+            max_tokens=64,
+        )
+    assert result.success is True
+    assert result.answer == "partial but useful"
+    assert result.diagnostics.get("truncated") is True
+    statuses = [a.get("status") for a in result.diagnostics.get("remote_attempts", [])]
+    assert "truncated_accepted" in statuses
+
+
 def test_is_response_truncated_helper():
     assert is_response_truncated({"choices": [{"finish_reason": "length"}]})
     assert not is_response_truncated({"choices": [{"finish_reason": "stop"}]})

@@ -21,6 +21,30 @@ import requests
 import streamlit as st
 from PIL import Image
 
+# #region agent log
+_DEBUG_LOG_PATH = Path(__file__).resolve().parent / ".cursor" / "debug-0f4c4c.log"
+
+
+def _agent_dbg(hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
+    try:
+        _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "sessionId": "0f4c4c",
+            "runId": os.environ.get("DEBUG_RUN_ID", "pre-fix"),
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data or {},
+            "timestamp": int(time.time() * 1000),
+        }
+        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=True) + "\n")
+    except Exception:
+        pass
+
+
+# #endregion
+
 from my_routing_agent.cache.semantic_cache import SemanticCache
 from my_routing_agent.middleware.entropy import (
     compute_char_entropy,
@@ -125,7 +149,7 @@ REMOTE_SEMAPHORE_RETRIES = int(os.getenv("REMOTE_SEMAPHORE_RETRIES", "5"))
 REMOTE_SEMAPHORE_BACKOFF_S = float(os.getenv("REMOTE_SEMAPHORE_BACKOFF_S", "0.35"))
 LONG_CONTEXT_LINE_THRESHOLD = 12
 REMOTE_MAX_TOKENS_GREETING = 32
-REMOTE_MAX_TOKENS_SIMPLE = 64
+REMOTE_MAX_TOKENS_SIMPLE = int(os.getenv("REMOTE_MAX_TOKENS_SIMPLE", "256"))
 REMOTE_MAX_TOKENS_DEFAULT = int(os.getenv("FIREWORKS_MAX_TOKENS", "768"))
 REMOTE_MAX_TOKENS_LONG = int(os.getenv("REMOTE_MAX_TOKENS_LONG", "1024"))
 REMOTE_MAX_TOKENS_CAP = int(os.getenv("REMOTE_MAX_TOKENS_CAP", "2048"))
@@ -192,7 +216,6 @@ FIREWORKS_MODEL_PREFIX = "accounts/fireworks/models/"
 REMOTE_MODEL_CANDIDATES = [
     "accounts/fireworks/models/qwen3p7-plus",
     "accounts/fireworks/models/minimax-m3",
-    "accounts/fireworks/models/qwen3p7-max",
 ]
 
 # Provider/model registry: models known to be deployed and accessible on
@@ -202,7 +225,6 @@ KNOWN_DEPLOYED_REMOTE_MODELS = frozenset(
     {
         "accounts/fireworks/models/minimax-m3",
         "accounts/fireworks/models/qwen3p7-plus",
-        "accounts/fireworks/models/qwen3p7-max",
         "accounts/fireworks/models/llama-v3p2-11b-vision-instruct",
     }
 )
@@ -426,9 +448,29 @@ def build_remote_candidates(selected_model: str, score: int | None = None) -> li
     ordered = list(preferred)
     for mid in REMOTE_FAILOVER_MODELS:
         if mid and mid not in ordered:
+            # Never re-introduce models outside the active allow-list / validated set.
+            if _ALLOWED_MODELS_FILTER is not None and mid not in _ALLOWED_MODELS_FILTER:
+                continue
+            if not is_known_deployed_model(mid):
+                continue
             ordered.append(mid)
 
-    return list(dict.fromkeys(ordered))
+    result = list(dict.fromkeys(ordered))
+    # #region agent log
+    _agent_dbg(
+        "A",
+        "app.py:build_remote_candidates",
+        "candidate chain built",
+        {
+            "selected": selected,
+            "score": score,
+            "candidates": result,
+            "includes_qwen_max": any("qwen3p7-max" in (m or "") for m in result),
+            "allowed_filter": sorted(_ALLOWED_MODELS_FILTER) if _ALLOWED_MODELS_FILTER else None,
+        },
+    )
+    # #endregion
+    return result
 
 
 def _is_model_unavailable(status_code: int, body: str) -> bool:
@@ -3570,7 +3612,11 @@ def _route_text_remote(
                 remote_tokens = int(data.get("usage", {}).get("total_tokens", 0))
                 if is_response_truncated(data):
                     truncated_flag = True
-                    if current_max_tokens < REMOTE_MAX_TOKENS_CAP:
+                    can_retry = (
+                        current_max_tokens < REMOTE_MAX_TOKENS_CAP
+                        and attempt < max_attempts - 1
+                    )
+                    if can_retry:
                         current_max_tokens = min(
                             current_max_tokens * 2, REMOTE_MAX_TOKENS_CAP
                         )
@@ -3582,6 +3628,32 @@ def _route_text_remote(
                             }
                         )
                         continue
+                    # Last attempt or already at cap: keep usable truncated text
+                    # instead of discarding it as transient_failed.
+                    remote_attempts.append(
+                        {
+                            "model_id": model_id,
+                            "status": "truncated_accepted",
+                            "detail": f"accepted truncated max_tokens={current_max_tokens}",
+                        }
+                    )
+                    # #region agent log
+                    _agent_dbg(
+                        "D",
+                        "app.py:_route_text_remote",
+                        "truncated answer accepted",
+                        {
+                            "model_id": model_id,
+                            "max_tokens": current_max_tokens,
+                            "attempt": attempt,
+                            "answer_len": len(answer or ""),
+                        },
+                    )
+                    # #endregion
+                    _note_remote_success()
+                    return _remote_result(
+                        answer, remote_tokens + distill_tokens, attempt, model_id
+                    )
                 remote_attempts.append({"model_id": model_id, "status": "ok"})
                 _note_remote_success()
                 return _remote_result(
@@ -3634,9 +3706,34 @@ def _route_text_remote(
             remote_attempts.append(
                 {"model_id": model_id, "status": "unavailable", "detail": last_detail}
             )
+            # #region agent log
+            _agent_dbg(
+                "A",
+                "app.py:_route_text_remote",
+                "model unavailable failover",
+                {
+                    "model_id": model_id,
+                    "detail": (last_detail or "")[:240],
+                    "is_qwen_max": "qwen3p7-max" in (model_id or ""),
+                },
+            )
+            # #endregion
             continue
 
         if malformed_response or rate_limit_exhausted:
+            # #region agent log
+            _agent_dbg(
+                "D",
+                "app.py:_route_text_remote",
+                "malformed or rate-limit exhausted",
+                {
+                    "model_id": model_id,
+                    "malformed": malformed_response,
+                    "rate_limit_exhausted": rate_limit_exhausted,
+                    "detail": (last_detail or "")[:240],
+                },
+            )
+            # #endregion
             continue
 
         # Transient errors exhausted for this model — try the next candidate.
@@ -3657,6 +3754,21 @@ def _route_text_remote(
     if last_detail == "unknown error":
         last_detail = "no successful remote response"
     logger.error("All remote candidates failed. Attempted: %s", attempted)
+    # #region agent log
+    _agent_dbg(
+        "D",
+        "app.py:_route_text_remote",
+        "all remote candidates failed",
+        {
+            "attempted": attempted_ids,
+            "attempt_statuses": [
+                {"model_id": a.get("model_id"), "status": a.get("status")}
+                for a in remote_attempts
+            ],
+            "last_detail": (last_detail or "")[:240],
+        },
+    )
+    # #endregion
     return _remote_result(
         "⚠️ **All remote models failed.**\n\n"
         f"Attempted (in order): {attempted}\n\n"

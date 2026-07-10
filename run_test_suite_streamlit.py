@@ -33,8 +33,7 @@ api_key = st.sidebar.text_input("Fireworks API Key", type="password",
 _default_models = os.getenv(
     "ALLOWED_MODELS",
     "accounts/fireworks/models/qwen3p7-plus,"
-    "accounts/fireworks/models/minimax-m3,"
-    "accounts/fireworks/models/qwen3p7-max",
+    "accounts/fireworks/models/minimax-m3",
 )
 model = st.sidebar.text_input(
     "Remote Models (comma-separated)",
