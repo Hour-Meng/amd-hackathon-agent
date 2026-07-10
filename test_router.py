@@ -1720,6 +1720,17 @@ def test_evaluate_task_outcome_flags_empty_and_error_answers():
     assert ok is False
     assert "coding" in reason
 
+    ok, reason = evaluate_task_outcome(
+        router_success=True,
+        answer='print("Hello World")',
+        route="PHANTOM_RACE",
+        tokens=0,
+        category="coding",
+        answer_type="code",
+    )
+    assert ok is True
+    assert reason == ""
+
 
 def test_strip_reasoning_traces_preserves_router_errors():
     raw = "⚠️ **All remote models failed.**\n\nLast error: HTTP 404"
