@@ -507,13 +507,15 @@ def _ensure_multi_model_allowlist(remote_model: str | None = None) -> None:
         if part.strip()
     ]
     preferred: list[str] = []
-    if remote_model:
-        mid = normalize_model_id(remote_model)
-        if mid:
+    # Accept a single id or a comma-separated list from Streamlit / CLI.
+    for part in (remote_model or "").split(","):
+        mid = normalize_model_id(part.strip()) if part.strip() else ""
+        if mid and mid not in preferred:
             preferred.append(mid)
     for mid in existing + list(REMOTE_FAILOVER_MODELS):
         if mid and mid not in preferred:
             preferred.append(mid)
+    preferred = list(dict.fromkeys(preferred))
     os.environ["ALLOWED_MODELS"] = ",".join(preferred) if preferred else default_allowed_models_csv()
 
 

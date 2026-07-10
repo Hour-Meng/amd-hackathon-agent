@@ -66,8 +66,11 @@ if run_btn or (auto_run and cases and api_key and "results" not in st.session_st
         st.stop()
 
     os.environ["FIREWORKS_API_KEY"] = api_key
-    if model:
-        os.environ["ALLOWED_MODELS"] = model
+    # Sidebar accepts a comma-separated allow-list; primary model is the first entry.
+    model_parts = [part.strip() for part in (model or "").split(",") if part.strip()]
+    if model_parts:
+        os.environ["ALLOWED_MODELS"] = ",".join(model_parts)
+    primary_model = model_parts[0] if model_parts else None
 
     from run_test_suite import (
         _configure_parallel_remote_limit,
@@ -77,7 +80,7 @@ if run_btn or (auto_run and cases and api_key and "results" not in st.session_st
         print_terminal_report,
     )
 
-    _ensure_multi_model_allowlist()
+    _ensure_multi_model_allowlist(primary_model)
     _configure_parallel_remote_limit(workers)
 
     progress_bar = st.progress(0, text="Initializing...")
@@ -102,7 +105,7 @@ if run_btn or (auto_run and cases and api_key and "results" not in st.session_st
                         "tags": c.get("tags", []), "expected_answer": c.get("expected_answer", ""),
                         "answer_type": c.get("answer_type", "")})() for c in cases],
         api_key=api_key,
-        remote_model=model,
+        remote_model=primary_model,
         max_workers=workers,
         progress_callback=_on_progress,
     )
