@@ -1505,6 +1505,110 @@ def test_entropy_gate_blocks_gibberish():
     assert decision.reason == app.ENTROPY_GATE_REASON
 
 
+def test_all_remote_candidates_failed_sets_success_false():
+    _reset_remote_validation_state()
+
+    def handler(url, body):
+        return _FakeResponse(404, text="Model not found")
+
+    with _patch_post(handler):
+        result = app._route_text_remote(
+            "Explain the French Revolution in detail",
+            "fw_testkey",
+            LOCAL_MODEL,
+            REMOTE_MODEL,
+            time.perf_counter(),
+            skip_distillation=True,
+            complexity_score=BALANCED_COMPLEXITY_SCORE,
+        )
+
+    assert result.success is False
+    assert result.answer
+    assert "404" in result.answer or "failed" in result.answer.lower()
+
+
+def test_remote_transient_error_sets_success_false():
+    _reset_remote_validation_state()
+
+    def handler(url, body):
+        err = app.requests.HTTPError("HTTP 502")
+        err.response = _FakeResponse(502, text="bad gateway")
+        raise err
+
+    with _patch_post(handler):
+        result = app._route_text_remote(
+            "capital of France",
+            "fw_testkey",
+            LOCAL_MODEL,
+            REMOTE_MODEL,
+            time.perf_counter(),
+            skip_distillation=True,
+            complexity_score=BALANCED_COMPLEXITY_SCORE,
+        )
+
+    assert result.success is False
+
+
+def test_angkor_phantom_runs_when_skip_local():
+    from my_routing_agent.routers.engine import PhantomZone
+
+    class _FakeAngkorResult:
+        zone = PhantomZone.PHANTOM_RACE
+        complexity_score = 0.5
+        reason = "test-phantom-zone"
+        theta = 0.5
+
+    class _FakeRouter:
+        is_ready = True
+        theta = 0.5
+
+        def route(self, text, entropy_score=None, dead_zone=None):
+            return _FakeAngkorResult()
+
+    class _FakeRunner:
+        def run_race(self, **kwargs):
+            return ("phantom answer", "remote", {"winner": "remote"})
+
+    orig_skip = app.SKIP_LOCAL
+    orig_router = app._ANGKOR_SKLEARN_ROUTER
+    orig_runner = app._ANGKOR_PHANTOM_RUNNER
+    app.SKIP_LOCAL = True
+    app._ANGKOR_SKLEARN_ROUTER = _FakeRouter()  # type: ignore[assignment]
+    app._ANGKOR_PHANTOM_RUNNER = _FakeRunner()  # type: ignore[assignment]
+    try:
+        result = app._angkor_phantom_execute(
+            "medium complexity prompt for phantom race",
+            "fw_test",
+            LOCAL_MODEL,
+            REMOTE_MODEL,
+            time.perf_counter(),
+        )
+        assert result is not None
+        assert result.route == "PHANTOM_RACE"
+        assert result.answer == "phantom answer"
+    finally:
+        app.SKIP_LOCAL = orig_skip
+        app._ANGKOR_SKLEARN_ROUTER = orig_router
+        app._ANGKOR_PHANTOM_RUNNER = orig_runner
+
+
+def test_ensure_angkor_bootstrapped_headless():
+    orig_ready = app._ANGKOR_HEADLESS_READY
+    orig_router = app._ANGKOR_SKLEARN_ROUTER
+    orig_runner = app._ANGKOR_PHANTOM_RUNNER
+    app._ANGKOR_HEADLESS_READY = False
+    app._ANGKOR_SKLEARN_ROUTER = None
+    app._ANGKOR_PHANTOM_RUNNER = None
+    try:
+        app._ensure_angkor_bootstrapped()
+        assert app._ANGKOR_HEADLESS_READY is True
+        assert app._ANGKOR_PHANTOM_RUNNER is not None
+    finally:
+        app._ANGKOR_HEADLESS_READY = orig_ready
+        app._ANGKOR_SKLEARN_ROUTER = orig_router
+        app._ANGKOR_PHANTOM_RUNNER = orig_runner
+
+
 def _run() -> int:
     tests = [obj for name, obj in sorted(globals().items()) if name.startswith("test_")]
     failures = 0

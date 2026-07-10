@@ -1,0 +1,202 @@
+{
+  "summary": {
+    "total": 200,
+    "passed": 200,
+    "failed": 0,
+    "success_rate": 100.0,
+    "avg_tokens": 167.5,
+    "avg_latency_ms": 4324.2,
+    "total_tokens": 33504,
+    "total_latency_ms": 864834.8,
+    "route_distribution": {
+      "MATH_PYTHON": 5,
+      "TEXT_LOCAL": 95,
+      "TEXT_REMOTE": 100
+    }
+  },
+  "by_category": {
+    "coding": {
+      "total": 35,
+      "passed": 35,
+      "failed": 0,
+      "success_rate": 100.0,
+      "avg_tokens": 12.9,
+      "avg_latency_ms": 3479.9,
+      "total_tokens": 451,
+      "total_latency_ms": 121795.1,
+      "route_distribution": {
+        "TEXT_LOCAL": 23,
+        "TEXT_REMOTE": 12
+      }
+    },
+    "facts": {
+      "total": 40,
+      "passed": 40,
+      "failed": 0,
+      "success_rate": 100.0,
+      "avg_tokens": 175.6,
+      "avg_latency_ms": 7473.3,
+      "total_tokens": 7025,
+      "total_latency_ms": 298932.9,
+      "route_distribution": {
+        "TEXT_LOCAL": 9,
+        "TEXT_REMOTE": 31
+      }
+    },
+    "logic": {
+      "total": 35,
+      "passed": 35,
+      "failed": 0,
+      "success_rate": 100.0,
+      "avg_tokens": 81.4,
+      "avg_latency_ms": 2040.1,
+      "total_tokens": 2848,
+      "total_latency_ms": 71404.4,
+      "route_distribution": {
+        "TEXT_LOCAL": 29,
+        "TEXT_REMOTE": 6
+      }
+    },
+    "math": {
+      "total": 50,
+      "passed": 50,
+      "failed": 0,
+      "success_rate": 100.0,
+      "avg_tokens": 250.9,
+      "avg_latency_ms": 2400.5,
+      "total_tokens": 12544,
+      "total_latency_ms": 120025.4,
+      "route_distribution": {
+        "MATH_PYTHON": 5,
+        "TEXT_LOCAL": 21,
+        "TEXT_REMOTE": 24
+      }
+    },
+    "trivia": {
+      "total": 40,
+      "passed": 40,
+      "failed": 0,
+      "success_rate": 100.0,
+      "avg_tokens": 265.9,
+      "avg_latency_ms": 6316.9,
+      "total_tokens": 10636,
+      "total_latency_ms": 252677.0,
+      "route_distribution": {
+        "TEXT_LOCAL": 13,
+        "TEXT_REMOTE": 27
+      }
+    }
+  },
+  "by_difficulty": {
+    "easy": {
+      "total": 40,
+      "passed": 40,
+      "failed": 0,
+      "success_rate": 100.0,
+      "avg_tokens": 247.2,
+      "avg_latency_ms": 5959.1,
+      "total_tokens": 9887,
+      "total_latency_ms": 238362.0,
+      "route_distribution": {
+        "MATH_PYTHON": 4,
+        "TEXT_LOCAL": 10,
+        "TEXT_REMOTE": 26
+      }
+    },
+    "expert": {
+      "total": 20,
+      "passed": 20,
+      "failed": 0,
+      "success_rate": 100.0,
+      "avg_tokens": 152.3,
+      "avg_latency_ms": 1674.1,
+      "total_tokens": 3047,
+      "total_latency_ms": 33481.4,
+      "route_distribution": {
+        "TEXT_LOCAL": 15,
+        "TEXT_REMOTE": 5
+      }
+    },
+    "hard": {
+      "total": 60,
+      "passed": 60,
+      "failed": 0,
+      "success_rate": 100.0,
+      "avg_tokens": 157.1,
+      "avg_latency_ms": 4255.1,
+      "total_tokens": 9423,
+      "total_latency_ms": 255308.2,
+      "route_distribution": {
+        "TEXT_LOCAL": 31,
+        "TEXT_REMOTE": 29
+      }
+    },
+    "medium": {
+      "total": 80,
+      "passed": 80,
+      "failed": 0,
+      "success_rate": 100.0,
+      "avg_tokens": 139.3,
+      "avg_latency_ms": 4221.0,
+      "total_tokens": 11147,
+      "total_latency_ms": 337683.2,
+      "route_distribution": {
+        "MATH_PYTHON": 1,
+        "TEXT_LOCAL": 39,
+        "TEXT_REMOTE": 40
+      }
+    }
+  },
+  "by_route": {
+    "MATH_PYTHON": {
+      "total": 5,
+      "passed": 5,
+      "failed": 0,
+      "success_rate": 100.0,
+      "avg_tokens": 0.0,
+      "avg_latency_ms": 0.2,
+      "total_tokens": 0,
+      "total_latency_ms": 0.8
+    },
+    "TEXT_LOCAL": {
+      "total": 95,
+      "passed": 95,
+      "failed": 0,
+      "success_rate": 100.0,
+      "avg_tokens": 0.0,
+      "avg_latency_ms": 0.3,
+      "total_tokens": 0,
+      "total_latency_ms": 26.2
+    },
+    "TEXT_REMOTE": {
+      "total": 100,
+      "passed": 100,
+      "failed": 0,
+      "success_rate": 100.0,
+      "avg_tokens": 335.0,
+      "avg_latency_ms": 8648.1,
+      "total_tokens": 33504,
+      "total_latency_ms": 864807.8
+    }
+  },
+  "failures": [],
+  "cost_estimate": {
+    "total_tokens_sent": 33504,
+    "estimated_cost_usd": 0.067008,
+    "assumptions": "$2.00 per 1M tokens input (Fireworks standard pricing)"
+  },
+  "latency_summary": {
+    "fastest": {
+      "task_id": "M019",
+      "latency_ms": 0.0625809989287518
+    },
+    "slowest": {
+      "task_id": "F008",
+      "latency_ms": 20675.567652999234
+    },
+    "median_ms": 2264.867050000248,
+    "p95_ms": 14252.563624000686,
+    "p99_ms": 18530.750930998693,
+    "mean_ms": 4324.2
+  }
+}

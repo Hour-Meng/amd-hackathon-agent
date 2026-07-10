@@ -60,6 +60,7 @@ _ANGKOR_SKLEARN_ROUTER: SklearnRouter | None = None
 _ANGKOR_ADAPTIVE_THETA: AdaptiveThreshold | None = None
 _ANGKOR_PHANTOM_RUNNER: DeadZoneRunner | None = None
 _ANGKOR_VERIFIER: CascadeVerifier | None = None
+_ANGKOR_HEADLESS_READY = False
 if not logger.handlers:
     logging.basicConfig(
         level=logging.INFO,
@@ -2752,8 +2753,6 @@ def _angkor_phantom_execute(
     started: float,
 ) -> RouteResult | None:
     """Try ANGKOR 3-zone + PHANTOM race. Returns None if not ready or not PHANTOM zone."""
-    if SKIP_LOCAL:
-        return None
     global _ANGKOR_SKLEARN_ROUTER, _ANGKOR_PHANTOM_RUNNER, _ANGKOR_ADAPTIVE_THETA
     router = _ANGKOR_SKLEARN_ROUTER
     if router is None or not router.is_ready:
@@ -2996,6 +2995,7 @@ def process_user_request(
 
     if timing:
         timing.mark("phantom_check_start")
+    _ensure_angkor_bootstrapped()
     phantom = _angkor_phantom_execute(
         prompt, api_key, active_local_model, active_remote_model, started,
     )
@@ -3333,6 +3333,7 @@ def _route_text_remote(
         model_used: str,
         *,
         extra_diag: dict[str, object] | None = None,
+        success: bool = True,
     ) -> RouteResult:
         cleaned_answer = strip_reasoning_traces(answer)
         diag: dict[str, object] = {
@@ -3356,6 +3357,7 @@ def _route_text_remote(
             fallback_used=fallback,
             retries=retries,
             diagnostics=diag,
+            success=success,
         )
 
     # A REMOTE decision must be served remotely — we NEVER fall back to local here.
@@ -3421,6 +3423,7 @@ def _route_text_remote(
                             distill_tokens,
                             attempt,
                             model_id,
+                            success=False,
                         )
                 if response.status_code >= 500:
                     last_detail = f"HTTP {response.status_code} (transient)"
@@ -3524,6 +3527,7 @@ def _route_text_remote(
                     distill_tokens,
                     attempt,
                     model_id,
+                    success=False,
                 )
 
             finally:
@@ -3560,6 +3564,7 @@ def _route_text_remote(
         distill_tokens,
         max_attempts,
         candidates[-1] if candidates else active_remote_model,
+        success=False,
     )
 
 
@@ -3853,6 +3858,45 @@ def _load_phantom_ensemble() -> dict:
     return {}
 
 
+def _create_angkor_components() -> tuple[
+    SklearnRouter | None,
+    AdaptiveThreshold,
+    DeadZoneRunner,
+    CascadeVerifier,
+]:
+    """Build ANGKOR/PHANTOM singletons (shared by Streamlit and headless batch)."""
+    try:
+        from sklearn.linear_model import LogisticRegression  # noqa: F401
+        sklearn_router: SklearnRouter | None = SklearnRouter(
+            adaptive_threshold=AdaptiveThreshold(),
+        )
+    except ImportError:
+        sklearn_router = None
+    adaptive_theta = AdaptiveThreshold()
+    ensemble_report = _load_phantom_ensemble()
+    phantom_runner = DeadZoneRunner(ensemble_report=ensemble_report)
+    verifier = CascadeVerifier()
+    return sklearn_router, adaptive_theta, phantom_runner, verifier
+
+
+def _ensure_angkor_bootstrapped() -> None:
+    """Initialize ANGKOR/PHANTOM for Streamlit UI or headless batch/test runs."""
+    global _ANGKOR_SKLEARN_ROUTER, _ANGKOR_ADAPTIVE_THETA
+    global _ANGKOR_PHANTOM_RUNNER, _ANGKOR_VERIFIER, _ANGKOR_HEADLESS_READY
+    if _has_ui_context():
+        _bootstrap_angkor_session()
+        return
+    if _ANGKOR_HEADLESS_READY:
+        return
+    (
+        _ANGKOR_SKLEARN_ROUTER,
+        _ANGKOR_ADAPTIVE_THETA,
+        _ANGKOR_PHANTOM_RUNNER,
+        _ANGKOR_VERIFIER,
+    ) = _create_angkor_components()
+    _ANGKOR_HEADLESS_READY = True
+
+
 def _bootstrap_angkor_session() -> None:
     """Persist ANGKOR/PHANTOM singletons across Streamlit reruns via session_state."""
     global _ANGKOR_CACHE, _ANGKOR_SKLEARN_ROUTER, _ANGKOR_ADAPTIVE_THETA
@@ -3865,15 +3909,12 @@ def _bootstrap_angkor_session() -> None:
         ss.angkor_cache = None
         ss.angkor_cache_initialized = False
         ss.angkor_cache_initializing = False
-        try:
-            from sklearn.linear_model import LogisticRegression  # noqa: F401
-            ss.angkor_sklearn_router = SklearnRouter(adaptive_threshold=AdaptiveThreshold())
-        except ImportError:
-            ss.angkor_sklearn_router = None
-        ss.angkor_adaptive_theta = AdaptiveThreshold()
-        ensemble_report = _load_phantom_ensemble()
-        ss.angkor_phantom_runner = DeadZoneRunner(ensemble_report=ensemble_report)
-        ss.angkor_verifier = CascadeVerifier()
+        (
+            ss.angkor_sklearn_router,
+            ss.angkor_adaptive_theta,
+            ss.angkor_phantom_runner,
+            ss.angkor_verifier,
+        ) = _create_angkor_components()
     _ANGKOR_SKLEARN_ROUTER = ss.get("angkor_sklearn_router")
     _ANGKOR_ADAPTIVE_THETA = ss.get("angkor_adaptive_theta")
     _ANGKOR_PHANTOM_RUNNER = ss.get("angkor_phantom_runner")
