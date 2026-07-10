@@ -1609,6 +1609,58 @@ def test_ensure_angkor_bootstrapped_headless():
         app._ANGKOR_PHANTOM_RUNNER = orig_runner
 
 
+def test_evaluate_task_outcome_flags_empty_and_error_answers():
+    from run_test_suite import evaluate_task_outcome
+
+    ok, reason = evaluate_task_outcome(
+        router_success=True,
+        answer="Paris",
+        route="TEXT_REMOTE",
+        tokens=12,
+        category="facts",
+    )
+    assert ok is True
+    assert reason == ""
+
+    ok, reason = evaluate_task_outcome(
+        router_success=True,
+        answer="",
+        route="TEXT_REMOTE",
+        tokens=0,
+        category="facts",
+    )
+    assert ok is False
+    assert reason == "empty answer"
+
+    ok, reason = evaluate_task_outcome(
+        router_success=True,
+        answer="⚠️ Remote service temporarily unavailable. Please try again shortly.",
+        route="TEXT_REMOTE",
+        tokens=0,
+        category="trivia",
+    )
+    assert ok is False
+    assert reason == "error response text"
+
+    ok, reason = evaluate_task_outcome(
+        router_success=True,
+        answer="ok",
+        route="TEXT_REMOTE",
+        tokens=0,
+        category="coding",
+        answer_type="code",
+    )
+    assert ok is False
+    assert "coding" in reason
+
+
+def test_strip_reasoning_traces_preserves_router_errors():
+    raw = "⚠️ **All remote models failed.**\n\nLast error: HTTP 404"
+    cleaned = strip_reasoning_traces(raw)
+    assert cleaned.startswith("⚠️")
+    assert "All remote models failed" in cleaned
+
+
 def _run() -> int:
     tests = [obj for name, obj in sorted(globals().items()) if name.startswith("test_")]
     failures = 0

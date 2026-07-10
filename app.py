@@ -870,6 +870,8 @@ def strip_reasoning_traces(text: str) -> str:
     if not text:
         return text
     cleaned = text.strip()
+    if cleaned.startswith(("⚠️", "❌")):
+        return cleaned
     think_open = "<" + "think" + ">"
     think_close = "<" + "/" + "think" + ">"
     think_pattern = re.escape(think_open) + r"[\s\S]*?" + re.escape(think_close)

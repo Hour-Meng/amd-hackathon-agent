@@ -107,12 +107,13 @@ if "report" in st.session_state:
 
     # Summary metrics
     s = report.summary
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Success Rate", f"{s['success_rate']:.1f}%", f"{s['passed']}/{s['total']}")
-    m2.metric("Total Tokens", f"{s['total_tokens']:,}")
-    m3.metric("Avg Latency", f"{s['avg_latency_ms']:.0f} ms")
-    m4.metric("Total Time", f"{s['total_latency_ms']/1000:.1f}s")
-    m5.metric("Estimated Cost", f"${report.cost_estimate['estimated_cost_usd']:.4f}")
+    m2.metric("False Positives", s.get("false_positives", 0), "router ok, bad output")
+    m3.metric("Total Tokens", f"{s['total_tokens']:,}")
+    m4.metric("Avg Latency", f"{s['avg_latency_ms']:.0f} ms")
+    m5.metric("Total Time", f"{s['total_latency_ms']/1000:.1f}s")
+    m6.metric("Estimated Cost", f"${report.cost_estimate['estimated_cost_usd']:.4f}")
 
     # Route distribution
     st.subheader("Route Distribution")
@@ -133,6 +134,9 @@ if "report" in st.session_state:
             "Passed": cs["passed"],
             "Rate": f"{cs['success_rate']:.1f}%",
             "Avg Tokens": f"{cs['avg_tokens']:.0f}",
+            "Total Tokens": cs["total_tokens"],
+            "False Positives": cs.get("false_positives", 0),
+            "Empty Answers": cs.get("empty_answers", 0),
             "Avg Latency": f"{cs['avg_latency_ms']:.0f} ms",
         })
     if cat_data:
@@ -176,6 +180,8 @@ if "report" in st.session_state:
                 "Tokens": r.tokens,
                 "Latency": f"{r.latency_ms:.0f}ms",
                 "Success": "✓" if r.success else "✗",
+                "Router OK": "✓" if r.router_success else "✗",
+                "Failure": r.failure_reason[:40] if r.failure_reason else "",
                 "Model": r.model_used[:20] if r.model_used else "",
             })
         st.dataframe(table, use_container_width=True, hide_index=True)
@@ -190,7 +196,10 @@ if "report" in st.session_state:
                 "Category": f.get("category", ""),
                 "Prompt": f["prompt"][:60],
                 "Route": f["route"],
-                "Error": f.get("error", ""),
+                "Model": f.get("model_used", "")[:24],
+                "Tokens": f.get("tokens", 0),
+                "Reason": f.get("failure_reason", ""),
+                "Answer": (f.get("answer_preview") or "")[:80],
             })
         st.dataframe(fail_data, use_container_width=True, hide_index=True)
 
@@ -204,15 +213,13 @@ if "report" in st.session_state:
         "failures": report.failures,
         "cost_estimate": report.cost_estimate,
         "latency_summary": report.latency_summary,
+        "task_results": report.task_results,
     }
     col1.download_button("📥 Download JSON Report", json.dumps(report_dict, indent=2),
                           file_name="test_report.json", mime="application/json")
 
-    raw_results = [{
-        "task_id": r.task_id, "category": r.category, "difficulty": r.difficulty,
-        "answer": r.answer, "route": r.route, "tokens": r.tokens,
-        "latency_ms": r.latency_ms, "success": r.success,
-    } for r in results]
+    from run_test_suite import task_result_to_dict
+    raw_results = [task_result_to_dict(r) for r in results]
     col2.download_button("📥 Download Raw Results", json.dumps(raw_results, indent=2),
                           file_name="test_results_raw.json", mime="application/json")
 

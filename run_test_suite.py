@@ -65,6 +65,79 @@ class TaskResult:
     routing_reason: str
     complexity_score: int
     error: str = ""
+    router_success: bool = True
+    failure_reason: str = ""
+
+
+_ERROR_ANSWER_SNIPPETS = (
+    "all remote models failed",
+    "temporarily unavailable",
+    "api key required",
+    "rate limit exceeded",
+    "fireworks api key",
+)
+
+
+def _looks_like_error_answer(answer: str) -> bool:
+    stripped = answer.strip()
+    if not stripped:
+        return True
+    if stripped.startswith(("⚠️", "❌")):
+        return True
+    lowered = stripped.lower()
+    return any(snippet in lowered for snippet in _ERROR_ANSWER_SNIPPETS)
+
+
+def evaluate_task_outcome(
+    *,
+    router_success: bool,
+    answer: str,
+    route: str,
+    tokens: int,
+    category: str,
+    answer_type: str = "",
+) -> tuple[bool, str]:
+    """
+  Score a task on substantive output, not merely whether routing completed.
+
+  Returns (success, failure_reason). failure_reason is empty when success is True.
+  """
+    if not router_success:
+        return False, "router reported failure"
+
+    stripped = (answer or "").strip()
+    if not stripped:
+        return False, "empty answer"
+
+    if _looks_like_error_answer(stripped):
+        return False, "error response text"
+
+    if category == "coding" or answer_type == "code":
+        remote_routes = {"TEXT_REMOTE", "FALLBACK_REMOTE", "PHANTOM_RACE"}
+        if route in remote_routes and tokens == 0 and len(stripped) < 24:
+            return False, "coding response missing generated content"
+
+    return True, ""
+
+
+def task_result_to_dict(result: TaskResult) -> dict[str, object]:
+    return {
+        "task_id": result.task_id,
+        "prompt": result.prompt,
+        "category": result.category,
+        "difficulty": result.difficulty,
+        "answer": result.answer,
+        "route": result.route,
+        "tokens": result.tokens,
+        "latency_ms": result.latency_ms,
+        "success": result.success,
+        "router_success": result.router_success,
+        "failure_reason": result.failure_reason,
+        "model_used": result.model_used,
+        "routing_reason": result.routing_reason,
+        "complexity_score": result.complexity_score,
+        "error": result.error,
+    }
 
 
 # ───────────────────────────────────────────────────────────
@@ -462,19 +535,31 @@ def run_suite(
                 resolved_remote_model,
             )
             elapsed = time.perf_counter() - t0
+            answer = result.answer.strip() if result.answer else ""
+            router_success = result.success
+            success, failure_reason = evaluate_task_outcome(
+                router_success=router_success,
+                answer=answer,
+                route=result.route,
+                tokens=result.tokens,
+                category=tc.category,
+                answer_type=tc.answer_type,
+            )
             return TaskResult(
                 task_id=tc.task_id,
                 prompt=tc.prompt,
                 category=tc.category,
                 difficulty=tc.difficulty,
-                answer=result.answer.strip() if result.answer else "",
+                answer=answer,
                 route=result.route,
                 tokens=result.tokens,
                 latency_ms=result.latency_ms or round(elapsed * 1000, 1),
-                success=result.success,
+                success=success,
                 model_used=result.model_used,
                 routing_reason=result.routing_reason or "",
                 complexity_score=result.complexity_score or 0,
+                router_success=router_success,
+                failure_reason=failure_reason,
             )
         except Exception as exc:
             nonlocal errors
@@ -540,6 +625,7 @@ class SuiteReport:
     failures: list[dict[str, Any]] = field(default_factory=list)
     cost_estimate: dict[str, Any] = field(default_factory=dict)
     latency_summary: dict[str, Any] = field(default_factory=dict)
+    task_results: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _agg_stats(results: list[TaskResult]) -> dict[str, Any]:
@@ -547,6 +633,10 @@ def _agg_stats(results: list[TaskResult]) -> dict[str, Any]:
     passed = sum(1 for r in results if r.success)
     total_tok = sum(r.tokens for r in results)
     total_lat = sum(r.latency_ms for r in results)
+    empty_answers = sum(1 for r in results if not (r.answer or "").strip())
+    false_positives = sum(
+        1 for r in results if r.router_success and not r.success
+    )
     return {
         "total": n,
         "passed": passed,
@@ -556,6 +646,8 @@ def _agg_stats(results: list[TaskResult]) -> dict[str, Any]:
         "avg_latency_ms": round(total_lat / n, 1) if n else 0.0,
         "total_tokens": total_tok,
         "total_latency_ms": round(total_lat, 1),
+        "empty_answers": empty_answers,
+        "false_positives": false_positives,
     }
 
 
@@ -604,12 +696,18 @@ def generate_report(results: list[TaskResult]) -> SuiteReport:
             "task_id": r.task_id,
             "category": r.category,
             "difficulty": r.difficulty,
-            "prompt": r.prompt[:80],
+            "prompt": r.prompt[:120],
             "route": r.route,
-            "error": r.error or r.routing_reason,
+            "model_used": r.model_used,
+            "tokens": r.tokens,
+            "answer_preview": (r.answer or "")[:240],
+            "router_success": r.router_success,
+            "failure_reason": r.failure_reason or r.error or r.routing_reason,
         }
         for r in results if not r.success
     ]
+
+    report.task_results = [task_result_to_dict(r) for r in results]
 
     # Cost estimate (Fireworks approx: $2/1M input tokens)
     total_tok = report.summary["total_tokens"]
@@ -668,6 +766,12 @@ def print_terminal_report(report: SuiteReport, results: list[TaskResult]) -> Non
     print("╠" + "═" * W + "╣")
     print(f"║  Success Rate:    {s['success_rate']:6.1f}%  ({s['passed']}/{s['total']})"
           f"{'':>15s} ║")
+    if s.get("false_positives"):
+        fp = s["false_positives"]
+        print(f"║  False Positives: {fp:6d}  (router ok, bad output){'':>8s} ║")
+    if s.get("empty_answers"):
+        ea = s["empty_answers"]
+        print(f"║  Empty Answers:   {ea:6d}{'':>24s} ║")
     print(f"║  Total Tokens:    {s['total_tokens']:>6,}{'':>24s} ║")
     print(f"║  Avg Latency:     {s['avg_latency_ms']:>8.0f} ms{'':>21s} ║")
     total_time = s['total_latency_ms'] / 1000
@@ -729,8 +833,14 @@ def print_terminal_report(report: SuiteReport, results: list[TaskResult]) -> Non
         print("║" + _center("Failures") + "║")
         print("╠" + "═" * W + "╣")
         for f in report.failures[:10]:
-            prompt_short = f["prompt"][:50]
-            print(f"║  ✗ {f['task_id']:6s} [{f['route']:15s}] {prompt_short:<30s} ║")
+            prompt_short = f["prompt"][:40]
+            reason = f.get("failure_reason", "")[:28]
+            print(f"║  ✗ {f['task_id']:6s} [{f['route']:15s}] {prompt_short:<28s} ║")
+            answer_preview = (f.get("answer_preview") or "")[:48]
+            if answer_preview:
+                print(f"║     {answer_preview:<54s} ║")
+            if reason:
+                print(f"║     reason: {reason:<46s} ║")
         remaining = len(report.failures) - 10
         if remaining > 0:
             msg = f"... and {remaining} more"
@@ -821,6 +931,7 @@ def main() -> int:
         "failures": report.failures,
         "cost_estimate": report.cost_estimate,
         "latency_summary": report.latency_summary,
+        "task_results": report.task_results,
     }
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
