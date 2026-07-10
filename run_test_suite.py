@@ -491,16 +491,45 @@ def _configure_parallel_remote_limit(max_workers: int) -> None:
     os.environ["SWARM_MAX_CONCURRENT"] = str(max(1, max_workers))
 
 
+def _ensure_multi_model_allowlist(remote_model: str | None = None) -> None:
+    """
+    Ensure ALLOWED_MODELS includes all tier failovers.
+
+    A single-model allow-list collapses the remote fallback chain into identical
+    retries (the V2 report failure mode). Prefer the full tier set; if the user
+    passes --model, keep it first but still append the other tiers.
+    """
+    from app import REMOTE_FAILOVER_MODELS, default_allowed_models_csv, normalize_model_id
+
+    existing = [
+        normalize_model_id(part)
+        for part in os.environ.get("ALLOWED_MODELS", "").split(",")
+        if part.strip()
+    ]
+    preferred: list[str] = []
+    if remote_model:
+        mid = normalize_model_id(remote_model)
+        if mid:
+            preferred.append(mid)
+    for mid in existing + list(REMOTE_FAILOVER_MODELS):
+        if mid and mid not in preferred:
+            preferred.append(mid)
+    os.environ["ALLOWED_MODELS"] = ",".join(preferred) if preferred else default_allowed_models_csv()
+
+
 def run_suite(
     cases: list[TestCase],
     *,
     api_key: str | None = None,
     remote_model: str | None = None,
     local_model: str | None = None,
-    max_workers: int = 4,
+    max_workers: int = 2,
     verbose: bool = False,
     progress_callback: Any = None,
 ) -> list[TaskResult]:
+    _ensure_multi_model_allowlist(remote_model)
+    _configure_parallel_remote_limit(max_workers)
+
     from app import (
         DEFAULT_LOCAL_MODEL,
         DEFAULT_REMOTE_MODEL,
@@ -523,8 +552,6 @@ def run_suite(
 
     resolved_local_model = local_model or DEFAULT_LOCAL_MODEL
     resolved_threshold = DEFAULT_COMPLEXITY_THRESHOLD
-
-    _configure_parallel_remote_limit(max_workers)
 
     results: list[TaskResult] = []
     completed = 0
@@ -891,7 +918,7 @@ def main() -> int:
     parser.add_argument("--local-model", help="Local model id")
     parser.add_argument("--generate", type=int, default=0, help="Generate N sample cases instead of loading file")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print per-task progress")
-    parser.add_argument("--workers", type=int, default=4, help="Parallel workers (default 4)")
+    parser.add_argument("--workers", type=int, default=2, help="Parallel workers (default 2)")
     parser.add_argument("--streamlit", action="store_true", help="Launch Streamlit dashboard")
     args = parser.parse_args()
 

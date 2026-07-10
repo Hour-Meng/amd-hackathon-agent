@@ -131,6 +131,8 @@ REMOTE_MAX_TOKENS_LONG = int(os.getenv("REMOTE_MAX_TOKENS_LONG", "1024"))
 REMOTE_MAX_TOKENS_CAP = int(os.getenv("REMOTE_MAX_TOKENS_CAP", "2048"))
 RATE_LIMIT_MAX_RETRIES = int(os.getenv("RATE_LIMIT_MAX_RETRIES", "3"))
 RATE_LIMIT_BACKOFF_BASE = float(os.getenv("RATE_LIMIT_BACKOFF_BASE", "1.0"))
+RATE_LIMIT_CIRCUIT_THRESHOLD = int(os.getenv("RATE_LIMIT_CIRCUIT_THRESHOLD", "3"))
+RATE_LIMIT_CIRCUIT_PAUSE_S = float(os.getenv("RATE_LIMIT_CIRCUIT_PAUSE_S", "2.0"))
 ENTROPY_INPUT_GATE_THRESHOLD = float(os.getenv("ENTROPY_INPUT_GATE_THRESHOLD", "3.8"))
 ENTROPY_CHAR_GATE_THRESHOLD = float(os.getenv("ENTROPY_CHAR_GATE_THRESHOLD", "3.9"))
 REMOTE_UI_TIMEOUT_SECONDS = 120
@@ -208,6 +210,9 @@ KNOWN_DEPLOYED_REMOTE_MODELS = frozenset(
 REMOTE_MODEL_TIERS: list[RemoteModelTier] = list(remote_model_tiers())
 
 _ALLOWED_MODELS_FILTER: frozenset[str] | None = None
+_RATE_LIMIT_CIRCUIT_LOCK = threading.Lock()
+_RATE_LIMIT_CONSECUTIVE = 0
+_RATE_LIMIT_PAUSE_UNTIL = 0.0
 
 
 def _select_remote_tier(score: int, default: str) -> str:
@@ -325,6 +330,53 @@ def normalize_model_id(model_id: str) -> str:
     return f"{FIREWORKS_MODEL_PREFIX}{mid.split('/')[-1]}"
 
 
+# Always-available failover pool (never shrunk by ALLOWED_MODELS). Preferred
+# models are tried first; these are appended so a single-model allow-list still
+# has distinct backups under rate-limit / outage pressure.
+REMOTE_FAILOVER_MODELS: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        normalize_model_id(m)
+        for m in (
+            *(tier.model_id for tier in REMOTE_MODEL_TIERS),
+            *REMOTE_MODEL_CANDIDATES,
+        )
+        if normalize_model_id(m)
+    )
+)
+
+
+def default_allowed_models_csv() -> str:
+    """Comma-separated default allow-list covering all remote tiers."""
+    return ",".join(REMOTE_FAILOVER_MODELS)
+
+
+def _note_rate_limit_hit() -> None:
+    """Trip a short global pause after consecutive Fireworks rate limits."""
+    global _RATE_LIMIT_CONSECUTIVE, _RATE_LIMIT_PAUSE_UNTIL
+    with _RATE_LIMIT_CIRCUIT_LOCK:
+        _RATE_LIMIT_CONSECUTIVE += 1
+        if _RATE_LIMIT_CONSECUTIVE >= RATE_LIMIT_CIRCUIT_THRESHOLD:
+            _RATE_LIMIT_PAUSE_UNTIL = max(
+                _RATE_LIMIT_PAUSE_UNTIL,
+                time.perf_counter() + RATE_LIMIT_CIRCUIT_PAUSE_S,
+            )
+            _RATE_LIMIT_CONSECUTIVE = 0
+
+
+def _note_remote_success() -> None:
+    global _RATE_LIMIT_CONSECUTIVE
+    with _RATE_LIMIT_CIRCUIT_LOCK:
+        _RATE_LIMIT_CONSECUTIVE = 0
+
+
+def _wait_rate_limit_circuit() -> None:
+    with _RATE_LIMIT_CIRCUIT_LOCK:
+        pause_until = _RATE_LIMIT_PAUSE_UNTIL
+    remaining = pause_until - time.perf_counter()
+    if remaining > 0:
+        time.sleep(remaining)
+
+
 def is_known_deployed_model(model_id: str) -> bool:
     """True if the (normalized) model id is in the deployed/accessible registry."""
     return normalize_model_id(model_id) in KNOWN_DEPLOYED_REMOTE_MODELS
@@ -334,49 +386,47 @@ def build_remote_candidates(selected_model: str, score: int | None = None) -> li
     """
     Ordered, de-duplicated remote attempt list.
 
-    When ``score`` is provided, the tier-selected model is tried first, then
-    higher-capability tiers as fallbacks. Without ``score``, legacy ordering
-    applies (user selection + REMOTE_MODEL_CANDIDATES).
+    Preferred models (tier selection / ALLOWED_MODELS) are tried first. Distinct
+    known tier models are always appended as emergency failovers so a single-model
+    allow-list cannot collapse the chain into identical retries.
     """
     selected = normalize_model_id(selected_model)
+    preferred: list[str] = []
 
     if score is not None:
         tier_model = normalize_model_id(
             _select_remote_tier(score, selected or DEFAULT_REMOTE_MODEL)
         )
-        ordered: list[str] = []
         if tier_model:
-            ordered.append(tier_model)
+            preferred.append(tier_model)
         for tier in reversed(REMOTE_MODEL_TIERS):
             mid = normalize_model_id(tier.model_id)
-            if mid and mid not in ordered:
-                ordered.append(mid)
-        if _ALLOWED_MODELS_FILTER is not None:
-            ordered = [m for m in ordered if m in _ALLOWED_MODELS_FILTER]
-        if not ordered and _ALLOWED_MODELS_FILTER:
-            ordered = sorted(_ALLOWED_MODELS_FILTER)
-        if selected and selected not in ordered:
-            if _ALLOWED_MODELS_FILTER is None or selected in _ALLOWED_MODELS_FILTER:
-                ordered.append(selected)
-        return list(dict.fromkeys(ordered))
-
-    ordered = []
-
-    if selected and is_known_deployed_model(selected):
-        ordered.append(selected)
-
-    for cand in REMOTE_MODEL_CANDIDATES:
-        normalized = normalize_model_id(cand)
-        if normalized and normalized not in ordered and is_known_deployed_model(normalized):
-            ordered.append(normalized)
+            if mid and mid not in preferred:
+                preferred.append(mid)
+        if selected and selected not in preferred:
+            preferred.append(selected)
+    else:
+        if selected and is_known_deployed_model(selected):
+            preferred.append(selected)
+        for cand in REMOTE_MODEL_CANDIDATES:
+            normalized = normalize_model_id(cand)
+            if normalized and normalized not in preferred and is_known_deployed_model(normalized):
+                preferred.append(normalized)
+        if selected and selected not in preferred:
+            preferred.append(selected)
 
     if _ALLOWED_MODELS_FILTER is not None:
-        ordered = [m for m in ordered if m in _ALLOWED_MODELS_FILTER]
+        allowed_first = [m for m in preferred if m in _ALLOWED_MODELS_FILTER]
+        if not allowed_first and selected and selected in _ALLOWED_MODELS_FILTER:
+            allowed_first = [selected]
+        if not allowed_first:
+            allowed_first = sorted(_ALLOWED_MODELS_FILTER)
+        preferred = allowed_first
 
-    # Unknown selection: still attempt it, but only after the known-good models.
-    if selected and selected not in ordered:
-        if _ALLOWED_MODELS_FILTER is None or selected in _ALLOWED_MODELS_FILTER:
-            ordered.append(selected)
+    ordered = list(preferred)
+    for mid in REMOTE_FAILOVER_MODELS:
+        if mid and mid not in ordered:
+            ordered.append(mid)
 
     return list(dict.fromkeys(ordered))
 
@@ -3395,6 +3445,7 @@ def _route_text_remote(
 
         unavailable = False
         malformed_response = False
+        rate_limit_exhausted = False
         for attempt in range(max_attempts):
             payload = {
                 "model": model_id,
@@ -3407,6 +3458,7 @@ def _route_text_remote(
             }
             acquired = False
             try:
+                _wait_rate_limit_circuit()
                 sem = _get_remote_call_semaphore()
                 acquire_timeout = max(2.0, REQUEST_TIMEOUT_SECONDS / REMOTE_SEMAPHORE_RETRIES)
                 for sem_try in range(REMOTE_SEMAPHORE_RETRIES):
@@ -3432,6 +3484,7 @@ def _route_text_remote(
                 )
                 if is_rate_limit_error(response.status_code, response.text):
                     rate_limit_hits += 1
+                    _note_rate_limit_hit()
                     last_detail = f"HTTP {response.status_code}: rate limited"
                     remote_attempts.append(
                         {
@@ -3443,6 +3496,7 @@ def _route_text_remote(
                     for rate_retry in range(RATE_LIMIT_MAX_RETRIES):
                         backoff = RATE_LIMIT_BACKOFF_BASE * (2 ** rate_retry)
                         time.sleep(backoff)
+                        _wait_rate_limit_circuit()
                         response = requests.post(
                             get_remote_endpoint(),
                             headers=headers,
@@ -3452,18 +3506,15 @@ def _route_text_remote(
                         if not is_rate_limit_error(response.status_code, response.text):
                             break
                         rate_limit_hits += 1
+                        _note_rate_limit_hit()
                     if is_rate_limit_error(response.status_code, response.text):
                         last_detail = (
                             "Fireworks rate limit exceeded. "
                             "Please wait a moment and try again."
                         )
-                        return _remote_result(
-                            f"⚠️ {last_detail}",
-                            distill_tokens,
-                            attempt,
-                            model_id,
-                            success=False,
-                        )
+                        rate_limit_exhausted = True
+                        # Fail over to the next distinct model instead of aborting.
+                        break
                 if response.status_code >= 500:
                     last_detail = f"HTTP {response.status_code} (transient)"
                     logger.warning(
@@ -3532,6 +3583,7 @@ def _route_text_remote(
                         )
                         continue
                 remote_attempts.append({"model_id": model_id, "status": "ok"})
+                _note_remote_success()
                 return _remote_result(
                     answer, remote_tokens + distill_tokens, attempt, model_id
                 )
@@ -3584,7 +3636,7 @@ def _route_text_remote(
             )
             continue
 
-        if malformed_response:
+        if malformed_response or rate_limit_exhausted:
             continue
 
         # Transient errors exhausted for this model — try the next candidate.
@@ -3594,13 +3646,16 @@ def _route_text_remote(
 
     # No remote candidate worked. Return a clear structured error; the original
     # prompt payload is preserved on the result (original_prompt + diagnostics).
-    attempted = ", ".join(a["model_id"] for a in remote_attempts) or "none"
-    if last_detail == "unknown error" and remote_attempts:
+    attempted_ids = list(dict.fromkeys(a["model_id"] for a in remote_attempts)) or ["none"]
+    attempted = ", ".join(attempted_ids)
+    if remote_attempts:
         last_detail = (
             remote_attempts[-1].get("detail")
             or remote_attempts[-1].get("status")
             or last_detail
         )
+    if last_detail == "unknown error":
+        last_detail = "no successful remote response"
     logger.error("All remote candidates failed. Attempted: %s", attempted)
     return _remote_result(
         "⚠️ **All remote models failed.**\n\n"

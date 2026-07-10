@@ -227,6 +227,64 @@ def test_build_remote_candidates_uses_tier_first():
     assert any(m.endswith("minimax-m3") for m in candidates[1:])
 
 
+def test_build_remote_candidates_keeps_failover_when_allowlist_is_single_model():
+    previous = app._ALLOWED_MODELS_FILTER
+    try:
+        app._ALLOWED_MODELS_FILTER = frozenset(
+            {"accounts/fireworks/models/minimax-m3"}
+        )
+        candidates = build_remote_candidates(
+            "accounts/fireworks/models/minimax-m3", score=40
+        )
+        assert candidates[0].endswith("minimax-m3")
+        assert len(candidates) >= 2
+        assert len(set(candidates)) == len(candidates)
+        assert any(m.endswith("qwen3p7-plus") for m in candidates[1:])
+        assert any(m.endswith("qwen3p7-max") for m in candidates[1:])
+    finally:
+        app._ALLOWED_MODELS_FILTER = previous
+
+
+def test_rate_limit_fails_over_to_next_distinct_model():
+    _reset_remote_validation_state()
+    from unittest.mock import patch
+
+    seen: list[str] = []
+
+    def fake_post(_url, *, headers=None, json=None, timeout=None):
+        model_id = (json or {}).get("model", "")
+        seen.append(model_id)
+        if model_id.endswith("minimax-m3"):
+            return _FakeResponse(429, text="RATE_LIMIT_EXCEEDED")
+        return _FakeResponse(
+            200,
+            payload={
+                "choices": [{"message": {"content": "failover ok"}, "finish_reason": "stop"}],
+                "usage": {"total_tokens": 7},
+            },
+        )
+
+    with patch("app.requests.post", side_effect=fake_post):
+        with patch("app.time.sleep", return_value=None):
+            result = app._route_text_remote(
+                "What is the capital of France?",
+                "fw_test",
+                LOCAL_MODEL,
+                "accounts/fireworks/models/minimax-m3",
+                time.perf_counter(),
+                skip_distillation=True,
+                complexity_score=BALANCED_COMPLEXITY_SCORE,
+            )
+
+    assert result.success is True
+    assert result.answer == "failover ok"
+    assert any(m.endswith("minimax-m3") for m in seen)
+    assert any(not m.endswith("minimax-m3") for m in seen)
+    assert result.diagnostics.get("rate_limit_hits", 0) >= 1
+    tried = [a["model_id"] for a in result.diagnostics.get("remote_attempts", [])]
+    assert len(set(tried)) >= 2
+
+
 def test_complex_remote_decision_uses_full_tier():
     prompt = (
         "Explain quantum field theory and derive the path integral formulation "
@@ -432,6 +490,8 @@ def test_greeting_ignores_prior_local_failure():
 
 def _reset_remote_validation_state() -> None:
     app._VALIDATED_REMOTE_MODELS = []
+    app._RATE_LIMIT_CONSECUTIVE = 0
+    app._RATE_LIMIT_PAUSE_UNTIL = 0.0
     validated_path = app.ROOT_DIR / "validated_model_list.json"
     if validated_path.exists():
         validated_path.unlink()

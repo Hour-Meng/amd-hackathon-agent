@@ -30,8 +30,16 @@ if sample_path.exists() and st.sidebar.button("Use bundled test cases"):
 st.sidebar.header("Settings")
 api_key = st.sidebar.text_input("Fireworks API Key", type="password",
                                  value=os.getenv("FIREWORKS_API_KEY", ""))
-model = st.sidebar.text_input("Remote Model",
-                               value=os.getenv("ALLOWED_MODELS", "accounts/fireworks/models/minimax-m3").split(",")[0])
+_default_models = os.getenv(
+    "ALLOWED_MODELS",
+    "accounts/fireworks/models/qwen3p7-plus,"
+    "accounts/fireworks/models/minimax-m3,"
+    "accounts/fireworks/models/qwen3p7-max",
+)
+model = st.sidebar.text_input(
+    "Remote Models (comma-separated)",
+    value=_default_models,
+)
 workers = st.sidebar.slider("Parallel Workers", 1, 8, 2)
 auto_run = st.sidebar.checkbox("Run automatically on file load", value=True)
 
@@ -61,8 +69,15 @@ if run_btn or (auto_run and cases and api_key and "results" not in st.session_st
     if model:
         os.environ["ALLOWED_MODELS"] = model
 
-    from run_test_suite import _configure_parallel_remote_limit, run_suite, generate_report, print_terminal_report
+    from run_test_suite import (
+        _configure_parallel_remote_limit,
+        _ensure_multi_model_allowlist,
+        run_suite,
+        generate_report,
+        print_terminal_report,
+    )
 
+    _ensure_multi_model_allowlist()
     _configure_parallel_remote_limit(workers)
 
     progress_bar = st.progress(0, text="Initializing...")
