@@ -28,30 +28,6 @@ from typing import Any
 
 os.environ.setdefault("SKIP_LOCAL", "true")
 
-# #region agent log
-_DEBUG_LOG_PATH = Path(__file__).resolve().parent / ".cursor" / "debug-0f4c4c.log"
-
-
-def _agent_dbg(hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
-    try:
-        _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "sessionId": "0f4c4c",
-            "runId": os.environ.get("DEBUG_RUN_ID", "pre-fix"),
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data or {},
-            "timestamp": int(time.time() * 1000),
-        }
-        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, ensure_ascii=True) + "\n")
-    except Exception:
-        pass
-
-
-# #endregion
-
 logging.basicConfig(
     level=logging.WARNING,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -141,19 +117,6 @@ def evaluate_task_outcome(
         # Only flag missing generation for billed remote routes with empty-ish output.
         remote_routes = {"TEXT_REMOTE", "FALLBACK_REMOTE"}
         if route in remote_routes and tokens == 0 and len(stripped) < 24:
-            # #region agent log
-            _agent_dbg(
-                "E",
-                "run_test_suite.py:evaluate_task_outcome",
-                "coding short-answer rejected",
-                {
-                    "route": route,
-                    "tokens": tokens,
-                    "answer_len": len(stripped),
-                    "answer_preview": stripped[:80],
-                },
-            )
-            # #endregion
             return False, "coding response missing generated content"
 
     return True, ""
@@ -569,20 +532,6 @@ def _ensure_multi_model_allowlist(remote_model: str | None = None) -> None:
 
     preferred = list(dict.fromkeys(m for m in preferred if m))
     os.environ["ALLOWED_MODELS"] = ",".join(preferred) if preferred else default_allowed_models_csv()
-    # #region agent log
-    _agent_dbg(
-        "C",
-        "run_test_suite.py:_ensure_multi_model_allowlist",
-        "allowlist forced",
-        {
-            "remote_model_arg": remote_model,
-            "allowed_models": os.environ.get("ALLOWED_MODELS", ""),
-            "includes_qwen_max": "qwen3p7-max" in os.environ.get("ALLOWED_MODELS", ""),
-            "validated": validated,
-            "failover_models": list(REMOTE_FAILOVER_MODELS),
-        },
-    )
-    # #endregion
 
 
 def run_suite(
@@ -639,35 +588,6 @@ def run_suite(
             _ensure_multi_model_allowlist(remote_model or ",".join(filtered))
     except Exception as exc:
         logger.warning("Remote model validation skipped: %s", exc)
-
-    # #region agent log
-    validated_path = Path(__file__).resolve().parent / "validated_model_list.json"
-    validated_payload: dict[str, Any] = {}
-    if validated_path.exists():
-        try:
-            validated_payload = json.loads(validated_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            validated_payload = {"error": str(exc)}
-    _agent_dbg(
-        "B",
-        "run_test_suite.py:run_suite",
-        "validated list presence vs allowlist",
-        {
-            "validated_file_exists": validated_path.exists(),
-            "validated": validated_payload.get("validated"),
-            "removed": validated_payload.get("removed"),
-            "allowed_models_env": os.environ.get("ALLOWED_MODELS", ""),
-            "validated_applied_to_env": bool(
-                validated_payload.get("validated")
-                and all(
-                    m.strip() in set(validated_payload.get("validated") or [])
-                    for m in os.environ.get("ALLOWED_MODELS", "").split(",")
-                    if m.strip()
-                )
-            ),
-        },
-    )
-    # #endregion
 
     resolved_remote_model = remote_model
     try:

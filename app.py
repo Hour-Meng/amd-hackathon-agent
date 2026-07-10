@@ -21,30 +21,6 @@ import requests
 import streamlit as st
 from PIL import Image
 
-# #region agent log
-_DEBUG_LOG_PATH = Path(__file__).resolve().parent / ".cursor" / "debug-0f4c4c.log"
-
-
-def _agent_dbg(hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
-    try:
-        _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "sessionId": "0f4c4c",
-            "runId": os.environ.get("DEBUG_RUN_ID", "pre-fix"),
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data or {},
-            "timestamp": int(time.time() * 1000),
-        }
-        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, ensure_ascii=True) + "\n")
-    except Exception:
-        pass
-
-
-# #endregion
-
 from my_routing_agent.cache.semantic_cache import SemanticCache
 from my_routing_agent.middleware.entropy import (
     compute_char_entropy,
@@ -455,22 +431,7 @@ def build_remote_candidates(selected_model: str, score: int | None = None) -> li
                 continue
             ordered.append(mid)
 
-    result = list(dict.fromkeys(ordered))
-    # #region agent log
-    _agent_dbg(
-        "A",
-        "app.py:build_remote_candidates",
-        "candidate chain built",
-        {
-            "selected": selected,
-            "score": score,
-            "candidates": result,
-            "includes_qwen_max": any("qwen3p7-max" in (m or "") for m in result),
-            "allowed_filter": sorted(_ALLOWED_MODELS_FILTER) if _ALLOWED_MODELS_FILTER else None,
-        },
-    )
-    # #endregion
-    return result
+    return list(dict.fromkeys(ordered))
 
 
 def _is_model_unavailable(status_code: int, body: str) -> bool:
@@ -3637,19 +3598,6 @@ def _route_text_remote(
                             "detail": f"accepted truncated max_tokens={current_max_tokens}",
                         }
                     )
-                    # #region agent log
-                    _agent_dbg(
-                        "D",
-                        "app.py:_route_text_remote",
-                        "truncated answer accepted",
-                        {
-                            "model_id": model_id,
-                            "max_tokens": current_max_tokens,
-                            "attempt": attempt,
-                            "answer_len": len(answer or ""),
-                        },
-                    )
-                    # #endregion
                     _note_remote_success()
                     return _remote_result(
                         answer, remote_tokens + distill_tokens, attempt, model_id
@@ -3706,34 +3654,9 @@ def _route_text_remote(
             remote_attempts.append(
                 {"model_id": model_id, "status": "unavailable", "detail": last_detail}
             )
-            # #region agent log
-            _agent_dbg(
-                "A",
-                "app.py:_route_text_remote",
-                "model unavailable failover",
-                {
-                    "model_id": model_id,
-                    "detail": (last_detail or "")[:240],
-                    "is_qwen_max": "qwen3p7-max" in (model_id or ""),
-                },
-            )
-            # #endregion
             continue
 
         if malformed_response or rate_limit_exhausted:
-            # #region agent log
-            _agent_dbg(
-                "D",
-                "app.py:_route_text_remote",
-                "malformed or rate-limit exhausted",
-                {
-                    "model_id": model_id,
-                    "malformed": malformed_response,
-                    "rate_limit_exhausted": rate_limit_exhausted,
-                    "detail": (last_detail or "")[:240],
-                },
-            )
-            # #endregion
             continue
 
         # Transient errors exhausted for this model — try the next candidate.
@@ -3754,21 +3677,6 @@ def _route_text_remote(
     if last_detail == "unknown error":
         last_detail = "no successful remote response"
     logger.error("All remote candidates failed. Attempted: %s", attempted)
-    # #region agent log
-    _agent_dbg(
-        "D",
-        "app.py:_route_text_remote",
-        "all remote candidates failed",
-        {
-            "attempted": attempted_ids,
-            "attempt_statuses": [
-                {"model_id": a.get("model_id"), "status": a.get("status")}
-                for a in remote_attempts
-            ],
-            "last_detail": (last_detail or "")[:240],
-        },
-    )
-    # #endregion
     return _remote_result(
         "⚠️ **All remote models failed.**\n\n"
         f"Attempted (in order): {attempted}\n\n"
