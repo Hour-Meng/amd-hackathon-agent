@@ -1505,6 +1505,13 @@ def test_entropy_gate_blocks_gibberish():
     assert decision.reason == app.ENTROPY_GATE_REASON
 
 
+def test_entropy_gate_allows_normal_questions():
+    prompt = "Which number does not belong: 2, 3, 5, 7, 10?"
+    assert not app.should_entropy_gate_input(prompt)
+    decision = _decide(prompt)
+    assert decision.reason != app.ENTROPY_GATE_REASON
+
+
 def test_all_remote_candidates_failed_sets_success_false():
     _reset_remote_validation_state()
 

@@ -486,6 +486,11 @@ def generate_sample_cases(count: int = 200) -> list[TestCase]:
 # ───────────────────────────────────────────────────────────
 
 
+def _configure_parallel_remote_limit(max_workers: int) -> None:
+    """Align Fireworks concurrency with test-suite worker count."""
+    os.environ["SWARM_MAX_CONCURRENT"] = str(max(1, max_workers))
+
+
 def run_suite(
     cases: list[TestCase],
     *,
@@ -518,6 +523,8 @@ def run_suite(
 
     resolved_local_model = local_model or DEFAULT_LOCAL_MODEL
     resolved_threshold = DEFAULT_COMPLEXITY_THRESHOLD
+
+    _configure_parallel_remote_limit(max_workers)
 
     results: list[TaskResult] = []
     completed = 0
@@ -607,6 +614,26 @@ def run_suite(
 
     if errors:
         logger.warning(f"{errors} task(s) raised exceptions")
+
+    # One retry for transient remote failures (semaphore/API contention under load).
+    retry_ids = {
+        r.task_id
+        for r in results
+        if not r.success and r.route in {"TEXT_REMOTE", "FALLBACK_REMOTE"} and not r.router_success
+    }
+    if retry_ids:
+        _configure_parallel_remote_limit(1)
+        case_by_id = {tc.task_id: tc for tc in cases}
+        for task_id in sorted(retry_ids):
+            tc = case_by_id.get(task_id)
+            if tc is None:
+                continue
+            time.sleep(0.75)
+            retry_result = _process_one(tc)
+            for idx, existing in enumerate(results):
+                if existing.task_id == task_id:
+                    results[idx] = retry_result
+                    break
 
     return results
 

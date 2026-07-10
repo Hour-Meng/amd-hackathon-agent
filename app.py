@@ -120,7 +120,9 @@ DEFAULT_MAX_SUB_AGENTS = 1
 HARD_MAX_SUB_AGENTS = 4
 MIN_SUBTASK_CHARS = int(os.getenv("MIN_SUBTASK_CHARS", "12"))
 MIN_SUBTASK_WORDS = int(os.getenv("MIN_SUBTASK_WORDS", "3"))
-SWARM_MAX_CONCURRENT = int(os.getenv("SWARM_MAX_CONCURRENT", "2"))
+SWARM_MAX_CONCURRENT = int(os.getenv("SWARM_MAX_CONCURRENT", "4"))
+REMOTE_SEMAPHORE_RETRIES = int(os.getenv("REMOTE_SEMAPHORE_RETRIES", "5"))
+REMOTE_SEMAPHORE_BACKOFF_S = float(os.getenv("REMOTE_SEMAPHORE_BACKOFF_S", "0.35"))
 LONG_CONTEXT_LINE_THRESHOLD = 12
 REMOTE_MAX_TOKENS_GREETING = 32
 REMOTE_MAX_TOKENS_SIMPLE = 64
@@ -356,7 +358,7 @@ def build_remote_candidates(selected_model: str, score: int | None = None) -> li
         if selected and selected not in ordered:
             if _ALLOWED_MODELS_FILTER is None or selected in _ALLOWED_MODELS_FILTER:
                 ordered.append(selected)
-        return ordered
+        return list(dict.fromkeys(ordered))
 
     ordered = []
 
@@ -376,7 +378,7 @@ def build_remote_candidates(selected_model: str, score: int | None = None) -> li
         if _ALLOWED_MODELS_FILTER is None or selected in _ALLOWED_MODELS_FILTER:
             ordered.append(selected)
 
-    return ordered
+    return list(dict.fromkeys(ordered))
 
 
 def _is_model_unavailable(status_code: int, body: str) -> bool:
@@ -854,10 +856,21 @@ def is_multi_hop_prompt(prompt: str) -> bool:
     return any(keyword in lowered for keyword in COMPLEXITY_KEYWORDS)
 
 
+def _looks_like_natural_language(text: str) -> bool:
+    """Heuristic: English-like prompts should not be entropy-gated as gibberish."""
+    alpha = [c for c in text.lower() if c.isalpha()]
+    if len(alpha) < 10:
+        return False
+    vowel_ratio = sum(1 for c in alpha if c in "aeiou") / len(alpha)
+    return 0.25 <= vowel_ratio <= 0.55
+
+
 def should_entropy_gate_input(prompt: str, *, threshold: float | None = None) -> bool:
     """Gate gibberish / keyboard-mash prompts before any model call."""
     stripped = prompt.strip()
     if len(stripped) < 8:
+        return False
+    if _looks_like_natural_language(stripped):
         return False
     gate = threshold if threshold is not None else ENTROPY_INPUT_GATE_THRESHOLD
     if compute_char_entropy(stripped) >= ENTROPY_CHAR_GATE_THRESHOLD:
@@ -2465,7 +2478,7 @@ def route_and_execute(
     token_budget = compute_remote_max_tokens(prompt, decision)
     _log_routing(prompt, decision, local_healthy=local_healthy or has_image)
 
-    if decision.reason == ENTROPY_GATE_REASON:
+    if decision.reason == ENTROPY_GATE_REASON and decision.route != "REMOTE":
         result = RouteResult(
             answer=(
                 "I couldn't understand that input — it looks like random or garbled text. "
@@ -2662,8 +2675,19 @@ def route_and_execute(
     return result
 
 
-# Limit concurrent Fireworks calls during agent swarms.
-_REMOTE_CALL_SEMAPHORE = threading.BoundedSemaphore(SWARM_MAX_CONCURRENT)
+# Limit concurrent Fireworks calls during agent swarms / batch test runs.
+_REMOTE_CALL_SEMAPHORE: threading.BoundedSemaphore | None = None
+_REMOTE_CALL_SEMAPHORE_LIMIT = 0
+
+
+def _get_remote_call_semaphore() -> threading.BoundedSemaphore:
+    """Lazy-init so SWARM_MAX_CONCURRENT can be set before first remote call."""
+    global _REMOTE_CALL_SEMAPHORE, _REMOTE_CALL_SEMAPHORE_LIMIT
+    limit = max(1, int(os.getenv("SWARM_MAX_CONCURRENT", str(SWARM_MAX_CONCURRENT))))
+    if _REMOTE_CALL_SEMAPHORE is None or _REMOTE_CALL_SEMAPHORE_LIMIT != limit:
+        _REMOTE_CALL_SEMAPHORE = threading.BoundedSemaphore(limit)
+        _REMOTE_CALL_SEMAPHORE_LIMIT = limit
+    return _REMOTE_CALL_SEMAPHORE
 
 
 def execute_agent_swarm(
@@ -3383,9 +3407,22 @@ def _route_text_remote(
             }
             acquired = False
             try:
-                acquired = _REMOTE_CALL_SEMAPHORE.acquire(timeout=REQUEST_TIMEOUT_SECONDS)
-                if not acquired:
+                sem = _get_remote_call_semaphore()
+                acquire_timeout = max(2.0, REQUEST_TIMEOUT_SECONDS / REMOTE_SEMAPHORE_RETRIES)
+                for sem_try in range(REMOTE_SEMAPHORE_RETRIES):
+                    acquired = sem.acquire(timeout=acquire_timeout)
+                    if acquired:
+                        break
                     last_detail = "Remote concurrency limit timeout"
+                    time.sleep(REMOTE_SEMAPHORE_BACKOFF_S * (sem_try + 1))
+                if not acquired:
+                    remote_attempts.append(
+                        {
+                            "model_id": model_id,
+                            "status": "semaphore_timeout",
+                            "detail": last_detail,
+                        }
+                    )
                     continue
                 response = requests.post(
                     get_remote_endpoint(),
@@ -3534,7 +3571,7 @@ def _route_text_remote(
 
             finally:
                 if acquired:
-                    _REMOTE_CALL_SEMAPHORE.release()
+                    _get_remote_call_semaphore().release()
 
         if unavailable:
             logger.warning(
@@ -3558,6 +3595,12 @@ def _route_text_remote(
     # No remote candidate worked. Return a clear structured error; the original
     # prompt payload is preserved on the result (original_prompt + diagnostics).
     attempted = ", ".join(a["model_id"] for a in remote_attempts) or "none"
+    if last_detail == "unknown error" and remote_attempts:
+        last_detail = (
+            remote_attempts[-1].get("detail")
+            or remote_attempts[-1].get("status")
+            or last_detail
+        )
     logger.error("All remote candidates failed. Attempted: %s", attempted)
     return _remote_result(
         "⚠️ **All remote models failed.**\n\n"

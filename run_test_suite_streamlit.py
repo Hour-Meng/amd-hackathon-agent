@@ -61,13 +61,13 @@ if run_btn or (auto_run and cases and api_key and "results" not in st.session_st
     if model:
         os.environ["ALLOWED_MODELS"] = model
 
-    # ── Progress ──
+    from run_test_suite import _configure_parallel_remote_limit, run_suite, generate_report, print_terminal_report
+
+    _configure_parallel_remote_limit(workers)
 
     progress_bar = st.progress(0, text="Initializing...")
     status_text = st.empty()
     results_container = st.container()
-
-    from run_test_suite import run_suite, generate_report, print_terminal_report
 
     status_text.info("Running test suite...")
 
