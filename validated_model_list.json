@@ -7,10 +7,6 @@
     "accounts/fireworks/models/kimi-k2p6",
     "accounts/fireworks/models/gpt-oss-120b"
   ],
-  "removed": [
-    "accounts/fireworks/models/qwen3p7-plus",
-    "accounts/fireworks/models/minimax-m3",
-    "accounts/fireworks/models/qwen3p7-max"
-  ],
+  "removed": [],
   "accessible_count": 7
 }
