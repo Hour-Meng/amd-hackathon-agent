@@ -12,3 +12,16 @@ __pycache__/
 .fireworks_api_key
 *.md
 .github/
+tests/
+graphify-out/
+report.json
+test_report*.json
+debug_repro_*.json
+models/
+*.gguf
+*.csv
+calibrate-cache.json
+calibration_data.json
+phantom_ensemble.json
+threshold_sweep.csv
+labels.csv

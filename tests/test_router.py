@@ -1,6 +1,6 @@
 """Router-first regression tests for the hybrid AI middleware.
 
-Run with:  python3 test_router.py   (or)   pytest -q test_router.py
+Run with:  python3 tests/test_router.py   (or)   pytest -q tests/test_router.py
 """
 
 from __future__ import annotations
@@ -203,44 +203,42 @@ def test_composite_character_level_single_route():
 
 
 def test_default_local_is_lightweight_utility():
-    assert LOCAL_MODEL == "qwen2.5:0.5b"
-    assert DEFAULT_REMOTE_MODEL == "accounts/fireworks/models/minimax-m3"
+    assert LOCAL_MODEL in {"qwen2.5-1.5b-instruct", "bundled-gguf", "qwen2.5:0.5b"}
+    assert DEFAULT_REMOTE_MODEL == "accounts/fireworks/models/glm-5p1"
 
 
 def test_default_remote_list_contains_tier_models():
     ids = {c.split("/")[-1] for c in REMOTE_MODEL_CANDIDATES}
-    assert "qwen3p7-plus" in ids
-    assert "minimax-m3" in ids
-    assert "qwen3p7-max" in ids
+    assert "glm-5p1" in ids
+    assert "kimi-k2p5" in ids
+    assert "deepseek-v4-pro" in ids
 
 
 def test_select_remote_tier_by_complexity():
-    assert app._select_remote_tier(10, REMOTE_MODEL).endswith("qwen3p7-plus")
-    assert app._select_remote_tier(40, REMOTE_MODEL).endswith("minimax-m3")
-    assert app._select_remote_tier(70, REMOTE_MODEL).endswith("qwen3p7-max")
+    assert app._select_remote_tier(10, REMOTE_MODEL).endswith("glm-5p1")
+    assert app._select_remote_tier(40, REMOTE_MODEL).endswith("kimi-k2p5")
+    assert app._select_remote_tier(70, REMOTE_MODEL).endswith("deepseek-v4-pro")
 
 
 def test_build_remote_candidates_uses_tier_first():
     candidates = build_remote_candidates(REMOTE_MODEL, score=10)
-    assert candidates[0].endswith("qwen3p7-plus")
-    assert any(m.endswith("qwen3p7-max") for m in candidates[1:])
-    assert any(m.endswith("minimax-m3") for m in candidates[1:])
+    assert candidates[0].endswith("glm-5p1")
+    assert any(m.endswith("deepseek-v4-pro") for m in candidates[1:])
+    assert any(m.endswith("kimi-k2p5") for m in candidates[1:])
 
 
 def test_build_remote_candidates_keeps_failover_when_allowlist_is_single_model():
     previous = app._ALLOWED_MODELS_FILTER
     try:
         app._ALLOWED_MODELS_FILTER = frozenset(
-            {"accounts/fireworks/models/minimax-m3"}
+            {"accounts/fireworks/models/kimi-k2p5"}
         )
         candidates = build_remote_candidates(
-            "accounts/fireworks/models/minimax-m3", score=40
+            "accounts/fireworks/models/kimi-k2p5", score=40
         )
-        assert candidates[0].endswith("minimax-m3")
-        assert len(candidates) >= 2
+        assert candidates[0].endswith("kimi-k2p5")
+        assert all(m.endswith("kimi-k2p5") for m in candidates)
         assert len(set(candidates)) == len(candidates)
-        assert any(m.endswith("qwen3p7-plus") for m in candidates[1:])
-        assert any(m.endswith("qwen3p7-max") for m in candidates[1:])
     finally:
         app._ALLOWED_MODELS_FILTER = previous
 
@@ -254,7 +252,7 @@ def test_rate_limit_fails_over_to_next_distinct_model():
     def fake_post(_url, *, headers=None, json=None, timeout=None):
         model_id = (json or {}).get("model", "")
         seen.append(model_id)
-        if model_id.endswith("minimax-m3"):
+        if model_id.endswith("kimi-k2p5"):
             return _FakeResponse(429, text="RATE_LIMIT_EXCEEDED")
         return _FakeResponse(
             200,
@@ -270,7 +268,7 @@ def test_rate_limit_fails_over_to_next_distinct_model():
                 "What is the capital of France?",
                 "fw_test",
                 LOCAL_MODEL,
-                "accounts/fireworks/models/minimax-m3",
+                "accounts/fireworks/models/kimi-k2p5",
                 time.perf_counter(),
                 skip_distillation=True,
                 complexity_score=BALANCED_COMPLEXITY_SCORE,
@@ -278,8 +276,8 @@ def test_rate_limit_fails_over_to_next_distinct_model():
 
     assert result.success is True
     assert result.answer == "failover ok"
-    assert any(m.endswith("minimax-m3") for m in seen)
-    assert any(not m.endswith("minimax-m3") for m in seen)
+    assert any(m.endswith("kimi-k2p5") for m in seen)
+    assert any(not m.endswith("kimi-k2p5") for m in seen)
     assert result.diagnostics.get("rate_limit_hits", 0) >= 1
     tried = [a["model_id"] for a in result.diagnostics.get("remote_attempts", [])]
     assert len(set(tried)) >= 2
@@ -298,13 +296,13 @@ def test_complex_remote_decision_uses_full_tier():
         active_remote_model=REMOTE_MODEL,
     )
     assert decision.route == "REMOTE"
-    assert decision.model_id.endswith("qwen3p7-max")
+    assert decision.model_id.endswith("deepseek-v4-pro")
 
 
 def test_general_prompt_defaults_to_remote():
     decision = _decide("What is the weather like today in Paris?")
     assert decision.route == "REMOTE", decision
-    assert decision.model_id.endswith("qwen3p7-plus")
+    assert decision.model_id.endswith("glm-5p1")
 
 
 # --- Local capability ceiling -------------------------------------------------------
@@ -431,7 +429,7 @@ def test_local_timeout_falls_back_to_remote():
 
     assert result.route == "FALLBACK_REMOTE"
     assert result.fallback_used is True
-    assert result.model_used.endswith("qwen3p7-plus")
+    assert result.model_used.endswith("glm-5p1")
     assert result.answer == "remote answer"
     assert post_calls["local"] == 1
     assert had_prior_local_failure("hello")
@@ -465,7 +463,7 @@ def test_unhealthy_local_skips_inference_call():
 
     assert post_calls["local"] == 0
     assert result.route == "FALLBACK_REMOTE"
-    assert result.model_used.endswith("qwen3p7-plus")
+    assert result.model_used.endswith("glm-5p1")
 
 
 def test_prior_local_failure_forces_remote():
@@ -621,7 +619,7 @@ def test_ui_route_label_matches_fallback_backend():
         )
 
     assert result.route == "FALLBACK_REMOTE"
-    assert result.model_used.endswith("qwen3p7-plus")
+    assert result.model_used.endswith("glm-5p1")
     assert "TEXT_REMOTE" in "☁️ TEXT_REMOTE (fallback)"
 
 
@@ -1345,7 +1343,7 @@ def test_deadzone_remote_fallback_on_model_not_found():
         token_counter,
     ):
         calls.append(model_id)
-        if "minimax" in model_id:
+        if "kimi-k2p5" in model_id:
             return None, "model not found", 0
         token_counter.tokens_emitted = 24
         return "remote ok", "ok", 24
@@ -1359,8 +1357,8 @@ def test_deadzone_remote_fallback_on_model_not_found():
             "hello there",
             local_model="qwen2.5:0.5b",
             validated_remote_models=[
-                "accounts/fireworks/models/minimax-m3",
-                "accounts/fireworks/models/qwen3p7-plus",
+                "accounts/fireworks/models/kimi-k2p5",
+                "accounts/fireworks/models/glm-5p1",
             ],
             remote_call=remote_call,
             L_out_norm=0.4,
@@ -1368,8 +1366,8 @@ def test_deadzone_remote_fallback_on_model_not_found():
         )
     assert len(calls) >= 2
     assert answer == "remote ok"
-    assert meta["remote_models_tried"][0].endswith("minimax-m3")
-    assert any("qwen3p7-plus" in m for m in meta["remote_models_tried"])
+    assert meta["remote_models_tried"][0].endswith("kimi-k2p5")
+    assert any("glm-5p1" in m for m in meta["remote_models_tried"])
 
 
 def test_validate_remote_models_filters_inaccessible():
@@ -1383,7 +1381,7 @@ def test_validate_remote_models_filters_inaccessible():
         def json(self):
             return {
                 "data": [
-                    {"id": "accounts/fireworks/models/qwen3p7-plus"},
+                    {"id": "accounts/fireworks/models/glm-5p1"},
                 ]
             }
 
@@ -1393,14 +1391,14 @@ def test_validate_remote_models_filters_inaccessible():
     ):
         out = validate_remote_models(
             [
-                "accounts/fireworks/models/minimax-m3",
-                "accounts/fireworks/models/qwen3p7-plus",
+                "accounts/fireworks/models/kimi-k2p5",
+                "accounts/fireworks/models/glm-5p1",
             ],
             "fw_test",
             output_path=app.ROOT_DIR / "validated_model_list.json",
         )
-    assert out["validated"] == ["accounts/fireworks/models/qwen3p7-plus"]
-    assert "accounts/fireworks/models/minimax-m3" in out["removed"]
+    assert out["validated"] == ["accounts/fireworks/models/glm-5p1"]
+    assert "accounts/fireworks/models/kimi-k2p5" in out["removed"]
 
 
 # --- Adversarial diagnostic fixes (ANGKOR + PHANTOM) -----------------------------

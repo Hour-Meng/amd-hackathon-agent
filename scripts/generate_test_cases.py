@@ -88,8 +88,8 @@ def main() -> int:
     parser.add_argument(
         "-o",
         "--output",
-        default=str(ROOT / "test_cases.json"),
-        help="Output JSON path (default: repo root test_cases.json)",
+        default=str(ROOT / "tests" / "test_cases.json"),
+        help="Output JSON path (default: tests/test_cases.json)",
     )
     parser.add_argument("--count", type=int, default=200, help="Number of cases to generate")
     args = parser.parse_args()

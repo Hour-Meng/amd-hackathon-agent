@@ -1,9 +1,16 @@
 {
   "validated": [
-    "accounts/fireworks/models/qwen3p7-plus"
+    "accounts/fireworks/models/glm-5p1",
+    "accounts/fireworks/models/kimi-k2p5",
+    "accounts/fireworks/models/deepseek-v4-pro",
+    "accounts/fireworks/models/glm-5p2",
+    "accounts/fireworks/models/kimi-k2p6",
+    "accounts/fireworks/models/gpt-oss-120b"
   ],
   "removed": [
-    "accounts/fireworks/models/minimax-m3"
+    "accounts/fireworks/models/qwen3p7-plus",
+    "accounts/fireworks/models/minimax-m3",
+    "accounts/fireworks/models/qwen3p7-max"
   ],
-  "accessible_count": 1
+  "accessible_count": 7
 }

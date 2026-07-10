@@ -61,8 +61,8 @@ User prompt
 | Route | Backend | When |
 |-------|---------|------|
 | `MATH_PYTHON` | Python `eval` (sandboxed) | Embedded expression with `+ - * /` |
-| `TEXT_LOCAL` | Ollama `qwen2.5:0.5b` (utility only) | Trivial greetings/format when healthy |
-| `TEXT_REMOTE` | Fireworks `minimax-m3` (fallback: `qwen3p7-plus`) | Default generator for all other prompts |
+| `TEXT_LOCAL` | Bundled GGUF (`Qwen2.5-1.5B`) or Ollama fallback | Trivial greetings/format when healthy |
+| `TEXT_REMOTE` | Fireworks `glm-5p1` (failover: `kimi-k2p5`, `deepseek-v4-pro`) | Default generator for all other prompts |
 | `VISION_REMOTE` | Fireworks `llama-v3p2-11b-vision-instruct` | Image uploaded |
 | `AGENT_SWARM` | Parallel sub-agents | Multiple decomposed tasks |
 
@@ -231,7 +231,7 @@ Mount an input directory (with `tasks.json`) and an output directory. Set your F
 ```bash
 docker run --rm \
   -e FIREWORKS_API_KEY=fw_... \
-  -e ALLOWED_MODELS=accounts/fireworks/models/minimax-m3 \
+  -e ALLOWED_MODELS=accounts/fireworks/models/glm-5p1 \
   -v /path/to/input:/input \
   -v /path/to/output:/output \
   amd-hackathon-agent
@@ -244,9 +244,10 @@ The container exits with code **0** on success, **1** on failure. Limits: **10 m
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
 | `FIREWORKS_API_KEY` | Yes | — | Fireworks API key from the harness |
-| `ALLOWED_MODELS` | Yes | — | Comma-separated model IDs (e.g. `accounts/fireworks/models/minimax-m3`) |
+| `ALLOWED_MODELS` | Yes | — | Comma-separated model IDs (e.g. `accounts/fireworks/models/glm-5p1`) |
 | `FIREWORKS_BASE_URL` | No | `https://api.fireworks.ai/inference/v1` | Fireworks API base URL |
-| `SKIP_LOCAL` | No | `true` (in Docker) | Bypass Ollama; all inference via Fireworks |
+| `SKIP_LOCAL` | No | `false` (in Docker) | Set `true` only to force all inference via Fireworks |
+| `LOCAL_GGUF_PATH` | No | `/models/model.gguf` | Bundled GGUF path for in-process local inference |
 | `REQUEST_TIMEOUT_SECONDS` | No | `30` | Per-task timeout |
 | `BATCH_TIMEOUT_SECONDS` | No | `600` | Total batch timeout |
 | `INPUT_PATH` | No | `/input/tasks.json` | Override input file path |
@@ -257,16 +258,16 @@ The container exits with code **0** on success, **1** on failure. Limits: **10 m
 Useful for debugging before building the image:
 
 ```bash
-export SKIP_LOCAL=true
+export SKIP_LOCAL=false
 export FIREWORKS_API_KEY=fw_...
-export ALLOWED_MODELS=accounts/fireworks/models/minimax-m3
+export ALLOWED_MODELS=accounts/fireworks/models/glm-5p1
 export INPUT_PATH=./input/tasks.json
 export OUTPUT_PATH=./output/results.json
 
 python run_batch.py
 ```
 
-Requires the project venv and `pip install -r requirements-batch.txt` (or full `my_routing_agent/requirements.txt`).
+Requires the project venv and `pip install -r requirements-batch.txt` (or full `my_routing_agent/requirements.txt`). For local GGUF without Docker, run `scripts/download_model.sh` and set `LOCAL_GGUF_PATH`.
 
 ---
 

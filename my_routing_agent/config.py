@@ -9,7 +9,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class LocalConfig:
-    """Ollama / OpenAI-compatible local inference endpoint."""
+    """Ollama / OpenAI-compatible local inference endpoint, or bundled GGUF."""
 
     base_url: str = field(
         default_factory=lambda: os.getenv("LOCAL_LLM_BASE_URL", "http://localhost:11434/v1")
@@ -20,6 +20,48 @@ class LocalConfig:
         default_factory=lambda: float(os.getenv("LOCAL_LLM_TIMEOUT", "120"))
     )
     max_tokens: int = field(default_factory=lambda: int(os.getenv("LOCAL_LLM_MAX_TOKENS", "512")))
+    gguf_path: str = field(
+        default_factory=lambda: os.getenv("LOCAL_GGUF_PATH", "/models/model.gguf").strip()
+    )
+
+
+def resolve_local_gguf_path(explicit: str | None = None) -> str | None:
+    """
+    Return a usable GGUF path when bundled weights are present.
+
+    Checks LOCAL_GGUF_PATH (default /models/model.gguf) and optional explicit path.
+    """
+    from pathlib import Path
+
+    candidates = []
+    if explicit:
+        candidates.append(explicit.strip())
+    env_path = os.getenv("LOCAL_GGUF_PATH", "").strip()
+    if env_path:
+        candidates.append(env_path)
+    candidates.append("/models/model.gguf")
+    for raw in candidates:
+        if not raw:
+            continue
+        path = Path(raw).expanduser()
+        if path.is_file():
+            return str(path.resolve())
+    return None
+
+
+def create_local_client(config: LocalConfig | None = None):
+    """
+    Prefer BundledModelClient when a GGUF file exists; otherwise Ollama LocalClient.
+    """
+    cfg = config or LocalConfig()
+    gguf = resolve_local_gguf_path(cfg.gguf_path)
+    if gguf:
+        from my_routing_agent.clients.bundled_client import BundledModelClient
+
+        return BundledModelClient(gguf, config=cfg)
+    from my_routing_agent.clients.local_client import LocalClient
+
+    return LocalClient(cfg)
 
 
 @dataclass(frozen=True)
@@ -34,7 +76,7 @@ class RemoteConfig:
     api_key: str = field(default_factory=lambda: os.getenv("FIREWORKS_API_KEY", ""))
     model: str = field(
         default_factory=lambda: os.getenv(
-            "FIREWORKS_MODEL", "accounts/fireworks/models/qwen3p7-max"
+            "FIREWORKS_MODEL", "accounts/fireworks/models/glm-5p1"
         )
     )
     timeout_seconds: float = field(
@@ -66,7 +108,7 @@ def remote_model_tiers() -> tuple[RemoteModelTier, ...]:
             25,
             _tier_model_env(
                 "REMOTE_TIER_FAST_MODEL",
-                "accounts/fireworks/models/qwen3p7-plus",
+                "accounts/fireworks/models/glm-5p1",
             ),
             "fast",
         ),
@@ -75,7 +117,7 @@ def remote_model_tiers() -> tuple[RemoteModelTier, ...]:
             55,
             _tier_model_env(
                 "REMOTE_TIER_BALANCED_MODEL",
-                "accounts/fireworks/models/minimax-m3",
+                "accounts/fireworks/models/kimi-k2p5",
             ),
             "balanced",
         ),
@@ -84,7 +126,7 @@ def remote_model_tiers() -> tuple[RemoteModelTier, ...]:
             100,
             _tier_model_env(
                 "REMOTE_TIER_FULL_MODEL",
-                "accounts/fireworks/models/qwen3p7-plus",
+                "accounts/fireworks/models/deepseek-v4-pro",
             ),
             "full",
         ),

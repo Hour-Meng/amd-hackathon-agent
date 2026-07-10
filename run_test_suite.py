@@ -7,10 +7,10 @@ comprehensive statistical report with per-category, per-difficulty, and
 per-route breakdowns.
 
 Usage:
-    python run_test_suite.py test_cases.json                  # JSON file of cases
-    python run_test_suite.py test_cases.json --output report.json
+    python run_test_suite.py tests/test_cases.json                  # JSON file of cases
+    python run_test_suite.py tests/test_cases.json --output report.json
     python run_test_suite.py --generate 200                   # generate 200 sample cases
-    python run_test_suite.py test_cases.json --streamlit      # launch Streamlit dashboard
+    python run_test_suite.py tests/test_cases.json --streamlit      # launch Streamlit dashboard
 """
 
 from __future__ import annotations
@@ -980,7 +980,8 @@ def main() -> int:
         print(f"Generating {args.generate} sample test cases...")
         raw_cases = generate_test_cases(args.generate)
         validate_cases(raw_cases)
-        out_path = Path("test_cases.json")
+        out_path = Path(__file__).resolve().parent / "tests" / "test_cases.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(
             json.dumps(raw_cases, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",

@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Any
 
 # Batch defaults before importing the Streamlit-oriented router module.
-os.environ.setdefault("SKIP_LOCAL", "true")
+# Local GGUF is bundled in the Docker image — keep local inference enabled.
+os.environ.setdefault("SKIP_LOCAL", "false")
+os.environ.setdefault("LOCAL_GGUF_PATH", "/models/model.gguf")
 
 from app import (  # noqa: E402
     BATCH_TIMEOUT_SECONDS,

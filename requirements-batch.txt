@@ -5,3 +5,5 @@ scikit-learn>=1.4.2
 psutil>=5.9.0
 tiktoken>=0.7.0
 Pillow>=10.0.0
+# Installed explicitly in Dockerfile for CPU wheels; listed for local batch runs.
+llama-cpp-python>=0.3.0

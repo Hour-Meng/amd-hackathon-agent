@@ -19,9 +19,9 @@ st.caption("Load a test_cases.json file, run the suite, and inspect results inte
 # ── File upload ──
 
 uploaded = st.sidebar.file_uploader("Upload test_cases.json", type=["json"])
-sample_path = Path(__file__).parent / "test_cases.json"
+sample_path = Path(__file__).parent / "tests" / "test_cases.json"
 if not sample_path.exists():
-    sample_path = Path(__file__).parent / "test_cases_example.json"
+    sample_path = Path(__file__).parent / "tests" / "test_cases_example.json"
 if sample_path.exists() and st.sidebar.button("Use bundled test cases"):
     uploaded = sample_path.read_bytes()
 
@@ -32,8 +32,9 @@ api_key = st.sidebar.text_input("Fireworks API Key", type="password",
                                  value=os.getenv("FIREWORKS_API_KEY", ""))
 _default_models = os.getenv(
     "ALLOWED_MODELS",
-    "accounts/fireworks/models/qwen3p7-plus,"
-    "accounts/fireworks/models/minimax-m3",
+    "accounts/fireworks/models/glm-5p1,"
+    "accounts/fireworks/models/kimi-k2p5,"
+    "accounts/fireworks/models/deepseek-v4-pro",
 )
 model = st.sidebar.text_input(
     "Remote Models (comma-separated)",

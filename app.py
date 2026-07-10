@@ -46,9 +46,11 @@ from my_routing_agent.utils.math_eval import (
 from my_routing_agent.config import (
     RemoteModelTier,
     batch_timeout_seconds,
+    create_local_client,
     parse_allowed_models,
     remote_model_tiers,
     request_timeout_seconds,
+    resolve_local_gguf_path,
     skip_local_inference,
 )
 
@@ -61,6 +63,8 @@ _ANGKOR_ADAPTIVE_THETA: AdaptiveThreshold | None = None
 _ANGKOR_PHANTOM_RUNNER: DeadZoneRunner | None = None
 _ANGKOR_VERIFIER: CascadeVerifier | None = None
 _ANGKOR_HEADLESS_READY = False
+_LOCAL_INFERENCE_CLIENT = None
+_LOCAL_INFERENCE_CLIENT_LOCK = threading.Lock()
 if not logger.handlers:
     logging.basicConfig(
         level=logging.INFO,
@@ -174,24 +178,28 @@ CREATIVE_PATTERNS = (
 
 # Defaults / catalogs surfaced in the sidebar.
 # Local model is a lightweight utility (greetings/math/format only) — NOT the default generator.
-DEFAULT_LOCAL_MODEL = "qwen2.5:0.5b"
+DEFAULT_LOCAL_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen2.5-1.5b-instruct")
+if resolve_local_gguf_path():
+    DEFAULT_LOCAL_MODEL = os.getenv("LOCAL_LLM_MODEL", "bundled-gguf")
 CUSTOM_MODEL_SENTINEL = "Custom..."
 REMOTE_MODEL_OPTIONS = [
-    "accounts/fireworks/models/minimax-m3",
-    "accounts/fireworks/models/qwen3p7-plus",
+    "accounts/fireworks/models/glm-5p1",
+    "accounts/fireworks/models/kimi-k2p5",
+    "accounts/fireworks/models/deepseek-v4-pro",
     CUSTOM_MODEL_SENTINEL,
 ]
 DEFAULT_REMOTE_MODEL = REMOTE_MODEL_OPTIONS[0]
 # Vision requires a multimodal model regardless of the text-model selection.
-REMOTE_VISION_MODEL = "accounts/fireworks/models/qwen3p7-plus"
+REMOTE_VISION_MODEL = "accounts/fireworks/models/glm-5p1"
 
 FIREWORKS_MODEL_PREFIX = "accounts/fireworks/models/"
 
 # Priority-ordered remote text models used for legacy fallback when no tier score
 # is supplied. Tier selection (see REMOTE_MODEL_TIERS) is the primary path.
 REMOTE_MODEL_CANDIDATES = [
-    "accounts/fireworks/models/qwen3p7-plus",
-    "accounts/fireworks/models/minimax-m3",
+    "accounts/fireworks/models/glm-5p1",
+    "accounts/fireworks/models/kimi-k2p5",
+    "accounts/fireworks/models/deepseek-v4-pro",
 ]
 
 # Provider/model registry: models known to be deployed and accessible on
@@ -199,9 +207,12 @@ REMOTE_MODEL_CANDIDATES = [
 # invalid/undeployed selection is never used as the first attempt.
 KNOWN_DEPLOYED_REMOTE_MODELS = frozenset(
     {
-        "accounts/fireworks/models/minimax-m3",
-        "accounts/fireworks/models/qwen3p7-plus",
-        "accounts/fireworks/models/llama-v3p2-11b-vision-instruct",
+        "accounts/fireworks/models/glm-5p1",
+        "accounts/fireworks/models/glm-5p2",
+        "accounts/fireworks/models/kimi-k2p5",
+        "accounts/fireworks/models/kimi-k2p6",
+        "accounts/fireworks/models/deepseek-v4-pro",
+        "accounts/fireworks/models/gpt-oss-120b",
     }
 )
 
@@ -1112,6 +1123,20 @@ _LOCAL_HEALTH_LOCK = threading.Lock()
 _LOCAL_HEALTH_CACHE: dict[str, tuple[float, bool]] = {}
 
 
+def get_local_inference_client():
+    """Lazy singleton: BundledModelClient when GGUF exists, else Ollama LocalClient."""
+    global _LOCAL_INFERENCE_CLIENT
+    with _LOCAL_INFERENCE_CLIENT_LOCK:
+        if _LOCAL_INFERENCE_CLIENT is None:
+            _LOCAL_INFERENCE_CLIENT = create_local_client()
+        return _LOCAL_INFERENCE_CLIENT
+
+
+def uses_bundled_local() -> bool:
+    """True when a GGUF file is available for in-process local inference."""
+    return resolve_local_gguf_path() is not None
+
+
 def reset_local_health_cache() -> None:
     """Clear the cached health verdicts (used by tests and the UI refresh)."""
     with _LOCAL_HEALTH_LOCK:
@@ -1120,8 +1145,9 @@ def reset_local_health_cache() -> None:
 
 def check_local_health(model_id: str, *, ttl: float = LOCAL_HEALTH_TTL_SECONDS) -> bool:
     """
-    Probe the Ollama backend for liveness and that `model_id` is actually pulled.
-    The verdict is cached for `ttl` seconds so a dead backend is not hammered.
+    Probe the local backend for liveness.
+
+    Prefer bundled GGUF health when weights are present; otherwise probe Ollama tags.
     """
     key = (model_id or "").strip()
     now = time.time()
@@ -1133,14 +1159,17 @@ def check_local_health(model_id: str, *, ttl: float = LOCAL_HEALTH_TTL_SECONDS) 
 
     healthy = False
     try:
-        resp = requests.get(LOCAL_TAGS_ENDPOINT, timeout=LOCAL_HEALTH_TIMEOUT_SECONDS)
-        if resp.status_code == 200:
-            names = {str(m.get("name", "")) for m in resp.json().get("models", [])}
-            if not names:
-                # Server is up but reports no catalog; allow the attempt.
-                healthy = True
-            else:
-                healthy = key in names or f"{key}:latest" in names
+        if uses_bundled_local():
+            healthy = bool(get_local_inference_client().health_check())
+        else:
+            resp = requests.get(LOCAL_TAGS_ENDPOINT, timeout=LOCAL_HEALTH_TIMEOUT_SECONDS)
+            if resp.status_code == 200:
+                names = {str(m.get("name", "")) for m in resp.json().get("models", [])}
+                if not names:
+                    # Server is up but reports no catalog; allow the attempt.
+                    healthy = True
+                else:
+                    healthy = key in names or f"{key}:latest" in names
     except Exception as exc:
         logger.warning("Local health check failed for %s: %s", key, exc)
         healthy = False
@@ -1443,7 +1472,37 @@ def _ollama_generate(
     timeout: int = 120,
     options: dict[str, object] | None = None,
 ) -> tuple[str, int]:
-    """Call local Ollama generate API; return response text and eval token count."""
+    """
+    Call local inference; return response text and eval token count.
+
+    Uses bundled GGUF when available; otherwise the Ollama generate API.
+    """
+    if uses_bundled_local():
+        client = get_local_inference_client()
+        max_tokens = 128
+        temperature = 0.0
+        if options:
+            if "num_predict" in options:
+                try:
+                    max_tokens = int(options["num_predict"])  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    pass
+            if "temperature" in options:
+                try:
+                    temperature = float(options["temperature"])  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    pass
+        result = client.generate(
+            prompt,
+            system=system,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        if not result.success or not result.content:
+            raise RuntimeError(result.error or "bundled local inference failed")
+        tokens = result.completion_tokens or result.total_tokens or 0
+        return result.content.strip(), int(tokens)
+
     payload: dict[str, object] = {
         "model": model,
         "prompt": prompt,
@@ -3199,10 +3258,8 @@ def _route_text_local(
     started: float,
 ) -> RouteResult:
     """
-    Attempt local Ollama inference exactly ONCE, wrapped in a strict timeout and a
-    health gate, then on ANY failure (dead backend, timeout, non-200 status such as
-    a 404 NOT_FOUND, or an empty body) automatically reroute to the remote Fireworks
-    endpoint. A heavy local model is never retried for the same request.
+    Attempt local inference exactly ONCE (bundled GGUF or Ollama), wrapped in a
+    health gate, then on ANY failure automatically reroute to Fireworks remote.
     """
     if SKIP_LOCAL:
         return _route_text_remote(
@@ -3217,6 +3274,7 @@ def _route_text_local(
     timeout_ms = timeout_s * 1000
     fallback_reason: str | None = None
     error_type: str | None = None
+    backend_name = "bundled-gguf" if uses_bundled_local() else "ollama"
 
     # Health gate: if the backend is already known-unhealthy, skip the call entirely
     # so we never block on a dead/overloaded local model.
@@ -3224,33 +3282,20 @@ def _route_text_local(
         fallback_reason = "Local backend health check failed."
         error_type = "health_check_failed"
     else:
-        payload = {
-            "model": active_local_model,
-            "prompt": prompt,
-            "system": SUB_AGENT_SYSTEM_PROMPT,
-            "stream": False,
-            "options": {"temperature": 0.0, "num_predict": 128},
-        }
         try:
-            # (connect, read) timeout: read bounds total generation wait for stream=False.
-            response = requests.post(
-                LOCAL_ENDPOINT,
-                json=payload,
-                timeout=(LOCAL_HEALTH_TIMEOUT_SECONDS, timeout_s),
+            answer, tokens = _ollama_generate(
+                prompt=prompt,
+                model=active_local_model,
+                system=SUB_AGENT_SYSTEM_PROMPT,
+                timeout=timeout_s,
+                options={"temperature": 0.0, "num_predict": 128},
             )
-            if response.status_code != 200:
-                raise requests.HTTPError(
-                    f"Ollama returned status {response.status_code}", response=response
-                )
-            data = response.json()
-            answer = data.get("response", "").strip()
             if not answer:
-                raise ValueError("Ollama returned an empty response")
-            tokens = int(data.get("eval_count", 0))
+                raise ValueError("Local backend returned an empty response")
             latency_ms = (time.perf_counter() - started) * 1000.0
             _log_local_attempt(
                 model_name=active_local_model,
-                backend="ollama",
+                backend=backend_name,
                 route="TEXT_LOCAL",
                 timeout_ms=timeout_ms,
                 fallback_used=False,
@@ -3268,6 +3313,7 @@ def _route_text_local(
                         "model_name": active_local_model,
                         "timeout_ms": timeout_ms,
                         "memory_usage": get_memory_usage(),
+                        "backend": backend_name,
                     }
                 },
             )
@@ -3291,7 +3337,7 @@ def _route_text_local(
                     time.time() + LOCAL_HEALTH_TTL_SECONDS,
                     False,
                 )
-        except (requests.RequestException, ValueError) as exc:
+        except (requests.RequestException, ValueError, RuntimeError, OSError) as exc:
             fallback_reason = f"Local model '{active_local_model}' error: {exc}"
             error_type = "request_error"
 
@@ -3304,7 +3350,7 @@ def _route_text_local(
     mark_prior_local_failure(prompt)
     _log_local_attempt(
         model_name=active_local_model,
-        backend="ollama",
+        backend=backend_name,
         route="FALLBACK_REMOTE",
         timeout_ms=timeout_ms,
         fallback_used=True,

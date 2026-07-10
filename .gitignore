@@ -8,3 +8,13 @@ __pycache__/
 .mypy_cache/
 .cursor/
 .fireworks_api_key
+
+# Generated test / debug reports
+report.json
+test_report*.json
+debug_repro_*.json
+graphify-out/
+
+# Bundled local model weights (downloaded in Docker, not committed)
+models/
+*.gguf
