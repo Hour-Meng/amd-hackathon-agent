@@ -1,0 +1,7 @@
+# Full local development stack (Ollama/GGUF tooling, embeddings, spaCy).
+# Streamlit Cloud uses the lean root requirements.txt instead.
+-r requirements.txt
+sentence-transformers>=2.7.0
+spacy>=3.7.4
+torch>=2.0.0
+llama-cpp-python>=0.3.0

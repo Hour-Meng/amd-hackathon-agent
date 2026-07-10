@@ -1,11 +1,10 @@
+# Streamlit Cloud / local demo dependencies (must install on modern Python).
+# Heavy local-only extras live in requirements-full.txt and requirements-batch.txt.
 streamlit>=1.32.0
-faiss-cpu>=1.7.4
-sentence-transformers>=2.7.0
-spacy>=3.7.4
 scikit-learn>=1.4.2
 requests>=2.31.0
 Pillow>=10.0.0
 tiktoken>=0.7.0
 psutil>=5.9.0
-torch>=2.0.0
-llama-cpp-python>=0.3.0
+numpy>=1.26.0
+faiss-cpu>=1.12.0
