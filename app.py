@@ -512,15 +512,17 @@ COMPLEXITY_KEYWORDS = (
 SUB_AGENT_SYSTEM_PROMPT = """You are a concise, direct answering agent.
 Rules:
 1. Provide the direct answer. No greetings, no fluff.
-2. "How-to" instructions, general knowledge, facts, and open-ended factual
+2. If the prompt contains MULTIPLE questions, answer ALL of them.
+   Separate each answer on its own line with a dash or number.
+3. "How-to" instructions, general knowledge, facts, and open-ended factual
    requests (e.g. "an amazing thing about X", "a fact about Y") are ALL valid.
    Answer them neutrally and directly with a real fact.
-3. NEVER argue with or second-guess a well-formed request. Do not reply that a
+4. NEVER argue with or second-guess a well-formed request. Do not reply that a
    subject is "not amazing", "not interesting", "just a country", or otherwise
    judge the premise of a normal factual question.
-4. ONLY output an "Error:" if the premise is factually impossible or a logical
+5. ONLY output an "Error:" if the premise is factually impossible or a logical
    contradiction (e.g. asking for the capital of a city).
-5. For creative tasks, output ONLY the final creative text — no reasoning,
+6. For creative tasks, output ONLY the final creative text — no reasoning,
    steps, scratchpad, or meta-commentary.
 
 Examples:
@@ -1638,6 +1640,17 @@ def is_long_context_prompt(prompt: str) -> bool:
     return False
 
 
+def is_document_like_context(prompt: str) -> bool:
+    """True for pasted docs / file attachments — not merely slightly long multi-queries."""
+    stripped = prompt.strip()
+    lines = [ln for ln in stripped.splitlines() if ln.strip()]
+    if len(lines) >= LONG_CONTEXT_LINE_THRESHOLD:
+        return True
+    if "[Attached context from file]" in prompt:
+        return True
+    return False
+
+
 def is_iterative_long_task(prompt: str) -> bool:
     lowered = prompt.lower()
     return is_long_context_prompt(prompt) and any(p in lowered for p in LOOP_TASK_PATTERNS)
@@ -1669,6 +1682,22 @@ def _starts_with_task_keyword(segment: str) -> bool:
     return tokens[0].lower().strip(",.?!:;'\"") in _TASK_START_KEYWORDS
 
 
+def _is_independent_query_part(fragment: str) -> bool:
+    """True for split-worthy independent queries, including short ones like 'What is 2+2'."""
+    stripped = fragment.strip()
+    if not stripped:
+        return False
+    if not (_starts_with_task_keyword(stripped) or is_local_arithmetic(stripped)):
+        return False
+    if is_valid_subtask(stripped):
+        return True
+    return (
+        len(stripped.split()) >= MIN_SUBTASK_WORDS
+        and len(stripped) >= 8
+        and not _INVALID_SUBTASK_PATTERN.match(stripped)
+    )
+
+
 def split_independent_tasks(prompt: str) -> list[str]:
     """
     Conservative splitter — only for short, explicitly multi-query prompts.
@@ -1678,12 +1707,12 @@ def split_independent_tasks(prompt: str) -> list[str]:
     if not cleaned:
         return [cleaned]
     if (
-        is_long_context_prompt(cleaned)
+        is_document_like_context(cleaned)
         or is_synthesis_or_summary_task(cleaned)
         or is_symbolic_math(cleaned)
     ):
         return [cleaned]
-    if len(cleaned) > 200:
+    if len(cleaned) > 400:
         return [cleaned]
 
     parts = [part.strip() for part in _HEURISTIC_SPLIT.split(cleaned) if part.strip()]
@@ -1721,6 +1750,19 @@ def split_independent_tasks(prompt: str) -> list[str]:
                 if len(valid) >= 2 and all(is_valid_subtask(p) for p in valid):
                     return valid[:HARD_MAX_SUB_AGENTS]
 
+    # Conjunction / semicolon boundaries for independent queries.
+    for delimiter_pattern in (r"\s+and\s+", r"\s*;\s*"):
+        conj_parts = [
+            p.strip()
+            for p in re.split(delimiter_pattern, cleaned, flags=re.IGNORECASE)
+            if p.strip()
+        ]
+        if (
+            2 <= len(conj_parts) <= HARD_MAX_SUB_AGENTS
+            and all(_is_independent_query_part(p) for p in conj_parts)
+        ):
+            return conj_parts[:HARD_MAX_SUB_AGENTS]
+
     # Sentence / numbered-list boundaries only.
     sentence_parts = [
         seg.strip()
@@ -1757,7 +1799,7 @@ def should_decompose(prompt: str) -> bool:
     """
     if is_synthesis_or_summary_task(prompt):
         return False
-    if is_long_context_prompt(prompt):
+    if is_document_like_context(prompt):
         return False
     if is_direct_answer_prompt(prompt):
         return False
@@ -1765,7 +1807,7 @@ def should_decompose(prompt: str) -> bool:
         return False
     if is_symbolic_math(prompt):
         return False
-    if len(prompt.strip()) > 200:
+    if len(prompt.strip()) > 400:
         return False
 
     parts = split_independent_tasks(prompt)
@@ -1775,7 +1817,7 @@ def should_decompose(prompt: str) -> bool:
     substantial = [
         part
         for part in parts
-        if is_valid_subtask(part) and not is_local_trivial_whitelisted(part)
+        if _is_independent_query_part(part) and not is_local_trivial_whitelisted(part)
     ]
     if len(substantial) < 2:
         return False
@@ -3283,12 +3325,18 @@ def _route_text_local(
         error_type = "health_check_failed"
     else:
         try:
+            question_marks = len(re.findall(r"[?？]", prompt))
+            newlines = len(re.findall(r"\n", prompt.strip()))
+            question_count = max(1, question_marks + (1 if newlines else 0))
+            num_predict = (
+                128 if question_count <= 1 else min(512, 128 * max(2, question_count))
+            )
             answer, tokens = _ollama_generate(
                 prompt=prompt,
                 model=active_local_model,
                 system=SUB_AGENT_SYSTEM_PROMPT,
                 timeout=timeout_s,
-                options={"temperature": 0.0, "num_predict": 128},
+                options={"temperature": 0.0, "num_predict": num_predict},
             )
             if not answer:
                 raise ValueError("Local backend returned an empty response")

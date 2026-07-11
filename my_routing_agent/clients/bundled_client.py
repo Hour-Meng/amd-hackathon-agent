@@ -143,3 +143,44 @@ class BundledModelClient:
             max_tokens=max_tokens,
             temperature=temperature,
         )
+
+    def chat_with_logprobs(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int = 32,
+        temperature: float = 0.0,
+        top_logprobs: int = 5,
+    ) -> list[dict[str, Any]]:
+        """
+        Run a short completion and return per-token logprob snapshots.
+
+        Each item: {"token": str, "top_logprobs": list[dict], "token_index": int}
+        """
+        llm = self._ensure_loaded()
+        result = llm.create_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            logprobs=True,
+            top_logprobs=top_logprobs,
+        )
+        choice = (result.get("choices") or [{}])[0]
+        logprobs_info = choice.get("logprobs") or {}
+        content_entries = logprobs_info.get("content") or []
+        tokens_out: list[dict[str, Any]] = []
+        for idx, entry in enumerate(content_entries, start=1):
+            if not isinstance(entry, dict):
+                continue
+            token = str(entry.get("token") or "")
+            top = entry.get("top_logprobs") or []
+            if not isinstance(top, list):
+                top = []
+            tokens_out.append(
+                {
+                    "token": token,
+                    "top_logprobs": top,
+                    "token_index": idx,
+                }
+            )
+        return tokens_out

@@ -47,6 +47,8 @@ from app import (
     reset_prior_local_failures,
     route_decision,
     safe_math_agent,
+    should_decompose,
+    split_independent_tasks,
     strip_reasoning_traces,
     _render_key,
 )
@@ -627,6 +629,74 @@ def test_system_prompt_has_no_factual_premise_rejection():
     lowered = SUB_AGENT_SYSTEM_PROMPT.lower()
     assert "not an amazing thing" not in lowered
     assert "amazing thing about france" in lowered
+    assert "multiple questions" in lowered
+    assert "answer all" in lowered
+
+
+# --- Multi-question decomposition ---------------------------------------------------
+
+
+def test_split_and_conjunction_independent_queries():
+    parts = split_independent_tasks(
+        "What is 2+2 and what is the capital of France?"
+    )
+    assert len(parts) == 2
+    assert "2+2" in parts[0] or "2+2" in parts[1]
+    assert any("france" in p.lower() for p in parts)
+
+
+def test_split_does_not_break_france_and_germany():
+    prompt = "Compare France and Germany"
+    assert split_independent_tasks(prompt) == [prompt]
+
+
+def test_split_semicolon_independent_queries():
+    parts = split_independent_tasks("What is 2+2; what is 3+3?")
+    assert len(parts) == 2
+
+
+def test_medium_length_prompt_can_still_decompose():
+    """Prompts between 200-400 chars should not be blocked by the length guard alone."""
+    pad = " please answer carefully with brief detail." * 6  # pushes past 200 chars
+    prompt = f"What is 2+2 and what is the capital of France?{pad}"
+    assert 200 < len(prompt.strip()) <= 400
+    parts = split_independent_tasks(prompt)
+    assert len(parts) >= 2
+    assert should_decompose(prompt)
+
+
+def test_generation_signals_prefer_bundled_over_ollama():
+    """When a GGUF is resolvable, signals come from bundled client, not Ollama HTTP."""
+    from my_routing_agent.phantom import generation_signals as gs
+    import my_routing_agent.config as cfg
+
+    class _FakeBundled:
+        def chat_with_logprobs(self, messages, **kwargs):
+            return [
+                {
+                    "token": f"t{i}",
+                    "token_index": i,
+                    "top_logprobs": [
+                        {"token": f"t{i}", "logprob": -0.1},
+                        {"token": "alt", "logprob": -2.0},
+                        {"token": "alt2", "logprob": -3.0},
+                    ],
+                }
+                for i in range(1, 13)
+            ]
+
+    original_resolve = cfg.resolve_local_gguf_path
+    original_create = cfg.create_local_client
+    cfg.resolve_local_gguf_path = lambda explicit=None: "/models/model.gguf"
+    cfg.create_local_client = lambda config=None: _FakeBundled()
+    try:
+        record = gs.record_generation_signals("hi", "unused-model", label="good")
+    finally:
+        cfg.resolve_local_gguf_path = original_resolve
+        cfg.create_local_client = original_create
+
+    assert record.source == "bundled"
+    assert len(record.signals) >= 1
 
 
 # --- Structure-preserving distiller -------------------------------------------------
